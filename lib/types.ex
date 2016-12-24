@@ -57,29 +57,31 @@ defmodule Types do
 
   ## Forbidden
   # [foo | bar] (developers must use cons(...) to avoid ambiguity)
-  # value/1
-  # fn/2
 
   ## Built-in Patterns
   # pattern boolean() :: true | false
   # pattern number() :: integer() | float()
+  # pattern atom()
+  # pattern integer()
 
   ## Built-in Types
   # type list(a) :: empty_list() | cons(a, list(a))
   # type improper_list(a) :: empty_list() | cons(a, list(a) | a)
 
-  ## Reserved patterns
-  # atom()
-  # integer()
+  ## Representation
+  # {:value, val}
+  # {:fn, clauses, arity}
+  # :integer
+  # :atom
 
   def ast_to_type({:boolean, _, []}) do
-    ok([{:value, [true]}, {:value, [false]}])
+    ok([{:value, true}, {:value, false}])
   end
   def ast_to_type({:integer, _, []}) do
-    ok([{:integer, []}])
+    ok([:integer])
   end
   def ast_to_type({:atom, _, []}) do
-    ok([{:atom, []}])
+    ok([:atom])
   end
 
   @doc """
@@ -93,11 +95,11 @@ defmodule Types do
   """
   def qualify(type, type), do: :equal
 
-  def qualify({:integer, []}, {:value, [int]}) when is_integer(int), do: :superset
-  def qualify({:value, [int]}, {:integer, []}) when is_integer(int), do: :subset
+  def qualify(:integer, {:value, int}) when is_integer(int), do: :superset
+  def qualify({:value, int}, :integer) when is_integer(int), do: :subset
 
-  def qualify({:atom, []}, {:value, [atom]}) when is_atom(atom), do: :superset
-  def qualify({:value, [atom]}, {:atom, []}) when is_atom(atom), do: :subset
+  def qualify(:atom, {:value, atom}) when is_atom(atom), do: :superset
+  def qualify({:value, atom}, :atom) when is_atom(atom), do: :subset
 
   def qualify(_, _), do: :disjoint
 
@@ -148,7 +150,7 @@ defmodule Types do
 
   def pattern_to_type(other, vars) do
     if value?(other) do
-      ok([{:value, [other]}], vars)
+      ok([{:value, other}], vars)
     else
       error([], {:unknown_pattern, other})
     end
@@ -177,7 +179,7 @@ defmodule Types do
 
   defp of({:fn, _, clauses}, vars) do
     with {:ok, clauses} <- clauses(clauses, vars) do
-      ok([{:fn, [:lists.reverse(clauses), 1]}])
+      ok([{:fn, :lists.reverse(clauses), 1}])
     end
   end
 
@@ -187,7 +189,7 @@ defmodule Types do
       arity = length(args)
 
       case fun_type do
-        [{:fn, [clauses, ^arity]}] ->
+        [{:fn, clauses, ^arity}] ->
           [arg] = args
           with {:ok, arg_type} <- of(arg, vars) do
             case fn_apply(clauses, arg_type) do
@@ -203,7 +205,7 @@ defmodule Types do
 
   defp of(value, _types) do
     if value?(value) do
-      ok([{:value, [value]}])
+      ok([{:value, value}])
     else
       error([], {:unknown_expr, value})
     end
