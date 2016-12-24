@@ -5,31 +5,87 @@ defmodule Types do
   The type system builds on top of Elixir patterns and
   values to describe types.
 
-  The type system allows developers to define new patterns
-  and new types, which can be used to augment the type system.
-  Patterns can be used at any moment, including dynamic code.
-  Types, on the other hand, are compile-time only but, on the
-  positive side, can be recursive.
+  The type system exists around two constructs:
 
-  The type system automatically infer types from patterns and
-  expressions.
+    1. Patterns are non-recursive types that may be used by
+       both typed and untyped code
+
+    2. Types may be recursive and used exclusively by typed code
+
+  We will look into those constructs below.
+
+  ## Patterns
+
+  Patterns are non-recursive types made of values and other
+  patterns. For example, the built-in boolean pattern may be
+  defined as follows:
+
+      pattern boolean() :: true | false
+
+  A pattern can be used as types on typed code:
+
+      deftyped Strict do
+        def strict_or(boolean(), boolean()) :: boolean()
+        def strict_or(true, true), do: true
+        def strict_or(true, false), do: true
+        def strict_or(false, true), do: true
+        def strict_or(false, false), do: false
+      end
+
+  As well as patterns on non-typed code:
+
+      defmodule App do
+        def value_accepted?(accept :: boolean()) do
+          # ...
+        end
+      end
+
+  ## Types
+
+  Types are constructs build on top of values, patterns or other
+  types which may be recursive. Since types are recursive, they can
+  only be effectively checked statically. For example, the built-in
+  type `list(a)` is defined recursively as:
+
+      type list(a) :: empty_list() | cons(a, list(a))
+
   """
 
   @doc """
   Converts the given AST to its inner type.
   """
-  # TODO: Raise on reserved types: value/1, fn/2
+
+  ## Forbidden
+  # [foo | bar] (developers must use cons(...) to avoid ambiguity)
+  # value/1
+  # fn/2
+
+  ## Built-in Patterns
+  # pattern boolean() :: true | false
+  # pattern number() :: integer() | float()
+
+  ## Built-in Types
+  # type list(a) :: empty_list() | cons(a, list(a))
+  # type improper_list(a) :: empty_list() | cons(a, list(a) | a)
+
+  ## Reserved patterns
+  # atom()
+  # integer()
+
   def ast_to_type({:boolean, _, []}) do
-    ok([{:boolean, []}])
+    ok([{:value, [true]}, {:value, [false]}])
   end
   def ast_to_type({:integer, _, []}) do
     ok([{:integer, []}])
+  end
+  def ast_to_type({:atom, _, []}) do
+    ok([{:atom, []}])
   end
 
   @doc """
   Returns true if the given term is a type value.
   """
-  def value?(value) when is_integer(value) or is_boolean(value), do: true
+  def value?(value) when is_integer(value) or is_atom(value), do: true
   def value?(_), do: false
 
   @doc """
@@ -37,14 +93,11 @@ defmodule Types do
   """
   def qualify(type, type), do: :equal
 
-  def qualify({:any, []}, _), do: :superset
-  def qualify(_, {:any, []}), do: :subset
-
   def qualify({:integer, []}, {:value, [int]}) when is_integer(int), do: :superset
   def qualify({:value, [int]}, {:integer, []}) when is_integer(int), do: :subset
 
-  def qualify({:boolean, []}, {:value, [bool]}) when is_boolean(bool), do: :superset
-  def qualify({:value, [bool]}, {:boolean, []}) when is_boolean(bool), do: :subset
+  def qualify({:atom, []}, {:value, [atom]}) when is_atom(atom), do: :superset
+  def qualify({:value, [atom]}, {:atom, []}) when is_atom(atom), do: :subset
 
   def qualify(_, _), do: :disjoint
 
@@ -64,9 +117,9 @@ defmodule Types do
   @doc """
   Merges two union types.
   """
-  def merge(left, right) do
-    Enum.reduce(left, right, &merge_each/2)
-  end
+  def merge(left, []), do: left
+  def merge([], right), do: right
+  def merge(left, right), do: Enum.reduce(left, right, &merge_each/2)
 
   defp merge_each(left, [right | righties]) do
     case qualify(left, right) do
@@ -97,7 +150,7 @@ defmodule Types do
     if value?(other) do
       ok([{:value, [other]}], vars)
     else
-      ok([{:any, []}], vars)
+      error([], {:unknown_pattern, other})
     end
   end
 
