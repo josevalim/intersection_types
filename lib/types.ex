@@ -1,79 +1,197 @@
 defmodule Types do
   @moduledoc """
-  A type checker for Elixir ASTs.
+  A type checker for Elixir.
 
-  ## References
+  The type system builds on top of Elixir patterns and
+  values to describe types.
 
-    * Types and Programming Languages, Benjamin C. Pierce
+  The type system allows developers to define new patterns
+  and new types, which can be used to augment the type system.
+  Patterns can be used at any moment, including dynamic code.
+  Types, on the other hand, are compile-time only but, on the
+  positive side, can be recursive.
 
-  ## TODO
-
-    * Inference
-    * Overload
-    * Type syntax
-
+  The type system automatically infer types from patterns and
+  expressions.
   """
 
+  @doc """
+  Converts the given AST to its inner type.
+  """
+  # TODO: Raise on reserved types: value/1, fn/2
+  def ast_to_type({:boolean, _, []}) do
+    ok([{:boolean, []}])
+  end
+  def ast_to_type({:integer, _, []}) do
+    ok([{:integer, []}])
+  end
+
+  @doc """
+  Returns true if the given term is a type value.
+  """
+  def value?(value) when is_integer(value) or is_boolean(value), do: true
+  def value?(_), do: false
+
+  @doc """
+  Qualifies the relationship between two strict types from left to right.
+  """
+  def qualify(type, type), do: :equal
+
+  def qualify({:any, []}, _), do: :superset
+  def qualify(_, {:any, []}), do: :subset
+
+  def qualify({:integer, []}, {:value, [int]}) when is_integer(int), do: :superset
+  def qualify({:value, [int]}, {:integer, []}) when is_integer(int), do: :subset
+
+  def qualify({:boolean, []}, {:value, [bool]}) when is_boolean(bool), do: :superset
+  def qualify({:value, [bool]}, {:boolean, []}) when is_boolean(bool), do: :subset
+
+  def qualify(_, _), do: :disjoint
+
+  @doc """
+  Returns true if the union type on the left contains the strict one on the right.
+  """
+  def contains?(lefties, right) do
+    Enum.any?(lefties, fn left ->
+      case qualify(left, right) do
+        :superset -> true
+        :equal -> true
+        _ -> false
+      end
+    end)
+  end
+
+  @doc """
+  Merges two union types.
+  """
+  def merge(left, right) do
+    Enum.reduce(left, right, &merge_each/2)
+  end
+
+  defp merge_each(left, [right | righties]) do
+    case qualify(left, right) do
+      :superset -> [left | righties]
+      :subset -> [right | righties]
+      :equal -> [right | righties]
+      :disjoint -> [right | merge_each(left, righties)]
+    end
+  end
+  defp merge_each(left, []) do
+    [left]
+  end
+
+  @doc """
+  Converts the given pattern to a type.
+  """
+  def pattern_to_type({:::, meta, [{var, _, ctx}, type_ast]}, vars) when is_atom(var) and is_atom(ctx) do
+    with {:ok, type} <- ast_to_type(type_ast) do
+      bind_var(meta, {var, ctx}, type, vars)
+    end
+  end
+
+  def pattern_to_type({:::, meta, [_, _]} = ann, _vars) do
+    error(meta, {:invalid_pattern_annotation, ann})
+  end
+
+  def pattern_to_type(other, vars) do
+    if value?(other) do
+      ok([{:value, [other]}], vars)
+    else
+      ok([{:any, []}], vars)
+    end
+  end
+
+  defp bind_var(meta, var_ctx, type, vars) do
+    case Map.fetch(vars, var_ctx) do
+      {:ok, other} -> error(meta, {:bound_var, var_ctx, other, type})
+      :error -> ok(type, Map.put(vars, var_ctx, type))
+    end
+  end
+
+  @doc """
+  Returns the type of the given expression.
+  """
   def of(expr) do
     of(expr, %{})
   end
 
-  defp of(bool, _types) when is_boolean(bool) do
-    {:ok, :boolean}
-  end
-
-  defp of(integer, _types) when is_integer(integer) do
-    {:ok, :integer}
-  end
-
-  defp of({:if, meta, [arg, [do: do_clause, else: else_clause]]}, types) do
-    with {:ok, arg_type} <- of(arg, types),
-         {:ok, do_type} <- of(do_clause, types),
-         {:ok, else_type} <- of(else_clause, types) do
-      cond do
-        arg_type != :boolean ->
-          error(meta, {:if_conditional, arg_type})
-        do_type != else_type ->
-          error(meta, {:if_branches, do_type, else_type})
-        true ->
-          ok(do_type)
-      end
-    end
-  end
-
-  defp of({var, meta, ctx}, types) when is_atom(var) and is_atom(ctx) do
-    case Map.fetch(types, {var, ctx}) do
+  defp of({var, meta, ctx}, vars) when is_atom(var) and is_atom(ctx) do
+    case Map.fetch(vars, {var, ctx}) do
       {:ok, type} -> ok(type)
       :error -> error(meta, {:unbound_var, var, ctx})
     end
   end
 
-  defp of({:fn, _, [{:->, _, [[{:::, _, [{var, _, ctx}, type]}], body]}]}, types) when is_atom(var) and is_atom(ctx) do
-    types = Map.put(types, {var, ctx}, type)
-    with {:ok, body_type} <- of(body, types) do
-      ok({:fn, {[type], body_type}})
+  defp of({:fn, _, clauses}, vars) do
+    with {:ok, clauses} <- clauses(clauses, vars) do
+      ok([{:fn, [:lists.reverse(clauses), 1]}])
     end
   end
 
-  defp of({{:., _, [fun]}, meta, [arg]}, types) do
-    with {:ok, fun_type} <- of(fun, types),
-         {:ok, arg_type} <- of(arg, types) do
+  # TODO: Support multiple args
+  defp of({{:., _, [fun]}, meta, args}, vars) do
+    with {:ok, fun_type} <- of(fun, vars) do
+      arity = length(args)
+
       case fun_type do
-        {:fn, {[^arg_type], body_type}} ->
-          ok(body_type)
-        {:fn, {[other_type], _body_type}} ->
-          error(meta, {:fn_arg, other_type, arg_type})
+        [{:fn, [clauses, ^arity]}] ->
+          [arg] = args
+          with {:ok, arg_type} <- of(arg, vars) do
+            case fn_apply(clauses, arg_type) do
+              {[], type} -> ok(type)
+              {pending, _} -> error(meta, {:disjoint_fn, fun_type, pending})
+            end
+          end
         _ ->
-          error(meta, {:fn_app, fun_type})
+          error(meta, {:invalid_fn, fun_type, arity})
       end
     end
   end
 
-  defp ok(type) do
+  defp of(value, _types) do
+    if value?(value) do
+      ok([{:value, [value]}])
+    else
+      error([], {:unknown_expr, value})
+    end
+  end
+
+  ## of/2 helpers
+
+  defp fn_apply(clauses, arg) do
+    Enum.reduce(clauses, {arg, []}, fn {head, body}, {pending, sum} ->
+      case Enum.filter(arg, &contains?(head, &1)) do
+        [] -> {pending, sum}
+        unified -> {pending -- unified, merge(sum, body)}
+      end
+    end)
+  end
+
+  # TODO: Support multiple args
+  # TODO: Check if clauses have overlapping types
+  defp clauses(clauses, vars) do
+    Enum.reduce(clauses, {:ok, []}, fn
+      {:->, _, [[arg], body]}, {:ok, clauses} ->
+        with {:ok, head, pattern_vars} <- pattern_to_type(arg, %{}),
+             {:ok, body} <- of(body, Map.merge(vars, pattern_vars)),
+             do: {:ok, [{head, body} | clauses]}
+
+      _, {:error, meta, args} ->
+        {:error, meta, args}
+    end)
+  end
+
+  ## Helpers
+
+  defp ok(type) when is_list(type) do
     {:ok, type}
   end
 
+  defp ok(type, vars) when is_list(type) do
+    {:ok, type, vars}
+  end
+
   defp error(meta, args) do
-    {:error, args, meta}
+    {:error, meta, args}
   end
 end

@@ -7,35 +7,31 @@ defmodule TypesTest do
     end
   end
 
-  test "booleans" do
-    assert {:ok, :boolean} = quoted_of(true)
-    assert {:ok, :boolean} = quoted_of(false)
-  end
+  describe "of/1" do
+    test "booleans" do
+      assert {:ok, [{:value, [true]}]} = quoted_of(true)
+      assert {:ok, [{:value, [false]}]} = quoted_of(false)
+    end
 
-  test "ifs" do
-    assert {:ok, :boolean} =
-           quoted_of(if true, do: true, else: false)
+    test "functions" do
+      assert {:ok, [{:fn, [[
+               {[{:boolean, []}], [{:boolean, []}]}
+             ], 1]}]} =
+             quoted_of(fn bool :: boolean() -> bool end)
 
-    assert {:error, {:if_conditional, :integer}, _} =
-           quoted_of(if 0, do: true, else: false)
+      assert {:ok, [{:fn, [[
+               {[{:value, [false]}], [{:value, [true]}]},
+               {[{:value, [true]}], [{:value, [false]}]}
+             ], 1]}]} =
+             quoted_of(fn false -> true; true -> false end)
+    end
 
-    assert {:error, {:if_branches, :boolean, :integer}, _} =
-           quoted_of(if true, do: true, else: 0)
-  end
+    test "function calls" do
+      assert {:ok, [{:value, [true]}]} =
+             quoted_of((fn false -> true; true -> false end).(false))
 
-  test "functions" do
-    assert {:ok, {:fn, {[:boolean], :boolean}}} =
-           quoted_of(fn bool :: :boolean -> bool end)
-  end
-
-  test "function calls" do
-    assert {:ok, :boolean} =
-           quoted_of((fn bool :: :boolean -> bool end).(true))
-
-    assert {:error, {:fn_app, _}, _} =
-           quoted_of(fn bool :: :boolean -> bool.(true) end)
-
-    assert {:error, {:fn_arg, _, _}, _} =
-           quoted_of((fn bool :: :boolean -> bool end).(fn bool :: :boolean -> bool end))
+      assert {:ok, [{:value, [false]}]} =
+             quoted_of((fn false -> true; true -> false end).(true))
+    end
   end
 end
