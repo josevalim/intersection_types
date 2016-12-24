@@ -102,7 +102,14 @@ defmodule TypesTest do
   end
 
   describe "of/1" do
-    test "booleans" do
+    test "integers" do
+      assert {:ok, [{:value, 1}]} = quoted_of(1)
+      assert {:ok, [{:value, 2}]} = quoted_of(2)
+    end
+
+    test "atoms" do
+      assert {:ok, [{:value, nil}]} = quoted_of(nil)
+      assert {:ok, [{:value, :foo}]} = quoted_of(:foo)
       assert {:ok, [{:value, true}]} = quoted_of(true)
       assert {:ok, [{:value, false}]} = quoted_of(false)
     end
@@ -118,6 +125,9 @@ defmodule TypesTest do
                {[{:value, true}], [{:value, false}]}
              ], 1}]} =
              quoted_of(fn false -> true; true -> false end)
+
+      assert {:error, _, {:invalid_fn, _, 1}} =
+             quoted_of(fn true -> (true).(true) end)
     end
 
     test "function calls" do
@@ -126,6 +136,9 @@ defmodule TypesTest do
 
       assert {:ok, [{:value, false}]} =
              quoted_of((fn false -> true; true -> false end).(true))
+
+      assert {:error, _, {:invalid_fn, _, 1}} =
+             quoted_of((true).(true))
     end
   end
 end
