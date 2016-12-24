@@ -51,6 +51,14 @@ defmodule Types do
 
   """
 
+  ## State helpers
+
+  @state %{vars: %{}}
+
+  defp merge_state(%{vars: vars1} = state, %{vars: vars2}) do
+    %{state | vars: Map.merge(vars1, vars2)}
+  end
+
   @doc """
   Converts the given AST to its inner type.
   """
@@ -71,24 +79,26 @@ defmodule Types do
   ## Representation
   # {:value, val}
   # {:fn, clauses, arity}
+  # {:tuple, args, arity}
   # :integer
   # :atom
 
-  def ast_to_type({:boolean, _, []}) do
-    ok([{:value, true}, {:value, false}])
-  end
-  def ast_to_type({:integer, _, []}) do
-    ok([:integer])
-  end
-  def ast_to_type({:atom, _, []}) do
-    ok([:atom])
+  def ast_to_type(ast) do
+    ast_to_type(ast, @state)
   end
 
-  @doc """
-  Returns true if the given term is a type value.
-  """
-  def value?(value) when is_integer(value) or is_atom(value), do: true
-  def value?(_), do: false
+  defp ast_to_type({:boolean, _, []}, state) do
+    ok([{:value, true}, {:value, false}], state)
+  end
+  defp ast_to_type({:integer, _, []}, state) do
+    ok([:integer], state)
+  end
+  defp ast_to_type({:atom, _, []}, state) do
+    ok([:atom], state)
+  end
+  defp ast_to_type(other, state) do
+    literal(other, state, &ast_to_type/2)
+  end
 
   @doc """
   Qualifies the relationship between two strict types from left to right.
@@ -138,28 +148,38 @@ defmodule Types do
   @doc """
   Converts the given pattern to a type.
   """
-  def pattern_to_type({:::, meta, [{var, _, ctx}, type_ast]}, vars) when is_atom(var) and is_atom(ctx) do
-    with {:ok, type} <- ast_to_type(type_ast) do
-      bind_var(meta, {var, ctx}, type, vars)
+  def pattern_to_type(ast) do
+    pattern_to_type(ast, @state)
+  end
+
+  defp pattern_to_type(ast, %{vars: backup} = state) do
+    with {:ok, type, state} <- pattern_to_type(ast, backup, put_in(state.vars, %{})) do
+      {:ok, type, update_in(state.vars, &Map.merge(backup, &1))}
     end
   end
 
-  def pattern_to_type({:::, meta, [_, _]} = ann, _vars) do
+  defp pattern_to_type({:::, meta, [{var, _, ctx}, type_ast]},
+                       _backup, state) when is_atom(var) and is_atom(ctx) do
+    with {:ok, type, state} <- ast_to_type(type_ast, state) do
+      bind_var(meta, {var, ctx}, type, state)
+    end
+  end
+
+  defp pattern_to_type({:::, meta, [_, _]} = ann, _backup, _vars) do
     error(meta, {:invalid_pattern_annotation, ann})
   end
 
-  def pattern_to_type(other, vars) do
-    if value?(other) do
-      ok([{:value, other}], vars)
-    else
-      error([], {:unknown_pattern, other})
-    end
+  defp pattern_to_type(other, backup, vars) do
+    literal(other, vars, &pattern_to_type(&1, backup, &2))
   end
 
-  defp bind_var(meta, var_ctx, type, vars) do
+  defp bind_var(meta, var_ctx, type, %{vars: vars} = state) do
     case Map.fetch(vars, var_ctx) do
-      {:ok, other} -> error(meta, {:bound_var, var_ctx, other, type})
-      :error -> ok(type, Map.put(vars, var_ctx, type))
+      {:ok, other} ->
+        error(meta, {:bound_var, var_ctx, other, type})
+      :error ->
+        vars = Map.put(vars, var_ctx, type)
+        ok(type, %{state | vars: vars})
     end
   end
 
@@ -167,33 +187,33 @@ defmodule Types do
   Returns the type of the given expression.
   """
   def of(expr) do
-    of(expr, %{})
+    of(expr, @state)
   end
 
-  defp of({var, meta, ctx}, vars) when is_atom(var) and is_atom(ctx) do
+  defp of({var, meta, ctx}, %{vars: vars} = state) when is_atom(var) and is_atom(ctx) do
     case Map.fetch(vars, {var, ctx}) do
-      {:ok, type} -> ok(type)
+      {:ok, type} -> ok(type, state)
       :error -> error(meta, {:unbound_var, var, ctx})
     end
   end
 
-  defp of({:fn, _, clauses}, vars) do
-    with {:ok, clauses} <- clauses(clauses, vars) do
-      ok([{:fn, :lists.reverse(clauses), 1}])
+  defp of({:fn, _, clauses}, state) do
+    with {:ok, clauses} <- clauses(clauses, state) do
+      ok([{:fn, :lists.reverse(clauses), 1}], state)
     end
   end
 
   # TODO: Support multiple args
-  defp of({{:., _, [fun]}, meta, args}, vars) do
-    with {:ok, fun_type} <- of(fun, vars) do
+  defp of({{:., _, [fun]}, meta, args}, state) do
+    with {:ok, fun_type, fun_state} <- of(fun, state) do
       arity = length(args)
 
       case fun_type do
         [{:fn, clauses, ^arity}] ->
           [arg] = args
-          with {:ok, arg_type} <- of(arg, vars) do
+          with {:ok, arg_type, arg_state} <- of(arg, state) do
             case fn_apply(clauses, arg_type) do
-              {[], type} -> ok(type)
+              {[], type} -> ok(type, merge_state(fun_state, arg_state))
               {pending, _} -> error(meta, {:disjoint_fn, fun_type, pending})
             end
           end
@@ -203,12 +223,8 @@ defmodule Types do
     end
   end
 
-  defp of(value, _types) do
-    if value?(value) do
-      ok([{:value, value}])
-    else
-      error([], {:unknown_expr, value})
-    end
+  defp of(value, state) do
+    literal(value, state, &of/2)
   end
 
   ## of/2 helpers
@@ -224,22 +240,51 @@ defmodule Types do
 
   # TODO: Support multiple args
   # TODO: Check if clauses have overlapping types
-  defp clauses(clauses, vars) do
+  defp clauses(clauses, state) do
     Enum.reduce(clauses, {:ok, []}, fn
       {:->, _, [[arg], body]}, {:ok, clauses} ->
-        with {:ok, head, pattern_vars} <- pattern_to_type(arg, %{}),
-             {:ok, body} <- of(body, Map.merge(vars, pattern_vars)),
+        with {:ok, head, state} <- pattern_to_type(arg, state),
+             {:ok, body, _state} <- of(body, state),
              do: {:ok, [{head, body} | clauses]}
 
-      _, {:error, meta, args} ->
-        {:error, meta, args}
+      _, {:error, _, _} = error ->
+        error
     end)
   end
 
   ## Helpers
 
-  defp ok(type) when is_list(type) do
-    {:ok, type}
+  defp literal(value, state, _fun) when is_integer(value) or is_atom(value) do
+    ok([{:value, value}], state)
+  end
+  defp literal({left, right}, state, fun) do
+    with {:ok, args, arity, state} <- args([left, right], state, fun) do
+      ok({:tuple, args, arity}, state)
+    end
+  end
+  defp literal({:{}, _, args}, state, fun) do
+    with {:ok, args, arity, state} <- args(args, state, fun) do
+      ok({:tuple, args, arity}, state)
+    end
+  end
+  defp literal(other, _state, _fun) do
+    error([], {:unknown_pattern, other})
+  end
+
+  defp args(args, state, fun) do
+    ok_error =
+      Enum.reduce(args, {:ok, [], 0, state}, fn arg, acc ->
+        with {:ok, acc_args, acc_count, acc_state} <- acc,
+             {:ok, arg, arg_state} <- fun.(arg, state),
+             do: {:ok, [arg | acc_args], acc_count + 1, merge_state(acc_state, arg_state)}
+      end)
+
+    case ok_error do
+      {:ok, args, arity, state} ->
+        {:ok, Enum.reverse(args), arity, state}
+      {:error, _, _} = error ->
+        error
+    end
   end
 
   defp ok(type, vars) when is_list(type) do

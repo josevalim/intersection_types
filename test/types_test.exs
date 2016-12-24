@@ -2,31 +2,17 @@ defmodule TypesTest do
   use ExUnit.Case, async: true
   import Types
 
-  describe "value?/1" do
-    test "accepts integers" do
-      assert value?(true)
-      assert value?(false)
-    end
-
-    test "accepts atoms" do
-      assert value?(:foo)
-      assert value?(true)
-      assert value?(false)
-      assert value?(nil)
-    end
-  end
-
   defmacro quoted_qualify(left, right) do
-    with {:ok, [left], _} <- pattern_to_type(left, %{}),
-         {:ok, [right], _} <- pattern_to_type(right, %{}) do
+    with {:ok, [left], _} <- pattern_to_type(left),
+         {:ok, [right], _} <- pattern_to_type(right) do
       quote do
         qualify(unquote(Macro.escape(left)), unquote(Macro.escape(right)))
       end
     else
       _ ->
         quote do
-          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(left)), %{})
-          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(right)), %{})
+          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(left)))
+          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(right)))
         end
     end
   end
@@ -62,16 +48,16 @@ defmodule TypesTest do
   end
 
   defmacro quoted_merge(left, right) do
-    with {:ok, left, _} <- pattern_to_type(left, %{}),
-         {:ok, right, _} <- pattern_to_type(right, %{}) do
+    with {:ok, left, _} <- pattern_to_type(left),
+         {:ok, right, _} <- pattern_to_type(right) do
       quote do
         merge(unquote(Macro.escape(left)), unquote(Macro.escape(right)))
       end
     else
       _ ->
         quote do
-          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(left)), %{})
-          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(right)), %{})
+          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(left)))
+          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(right)))
         end
     end
   end
@@ -103,27 +89,27 @@ defmodule TypesTest do
 
   describe "of/1" do
     test "integers" do
-      assert {:ok, [{:value, 1}]} = quoted_of(1)
-      assert {:ok, [{:value, 2}]} = quoted_of(2)
+      assert {:ok, [{:value, 1}], _} = quoted_of(1)
+      assert {:ok, [{:value, 2}], _} = quoted_of(2)
     end
 
     test "atoms" do
-      assert {:ok, [{:value, nil}]} = quoted_of(nil)
-      assert {:ok, [{:value, :foo}]} = quoted_of(:foo)
-      assert {:ok, [{:value, true}]} = quoted_of(true)
-      assert {:ok, [{:value, false}]} = quoted_of(false)
+      assert {:ok, [{:value, nil}], _} = quoted_of(nil)
+      assert {:ok, [{:value, :foo}], _} = quoted_of(:foo)
+      assert {:ok, [{:value, true}], _} = quoted_of(true)
+      assert {:ok, [{:value, false}], _} = quoted_of(false)
     end
 
     test "functions" do
       assert {:ok, [{:fn, [
                {[{:value, true}, {:value, false}], [{:value, true}, {:value, false}]}
-             ], 1}]} =
+             ], 1}], _} =
              quoted_of(fn bool :: boolean() -> bool end)
 
       assert {:ok, [{:fn, [
                {[{:value, false}], [{:value, true}]},
                {[{:value, true}], [{:value, false}]}
-             ], 1}]} =
+             ], 1}], _} =
              quoted_of(fn false -> true; true -> false end)
 
       assert {:error, _, {:invalid_fn, _, 1}} =
@@ -131,10 +117,10 @@ defmodule TypesTest do
     end
 
     test "function calls" do
-      assert {:ok, [{:value, true}]} =
+      assert {:ok, [{:value, true}], _} =
              quoted_of((fn false -> true; true -> false end).(false))
 
-      assert {:ok, [{:value, false}]} =
+      assert {:ok, [{:value, false}], _} =
              quoted_of((fn false -> true; true -> false end).(true))
 
       assert {:error, _, {:invalid_fn, _, 1}} =
