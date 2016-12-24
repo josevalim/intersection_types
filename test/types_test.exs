@@ -61,6 +61,40 @@ defmodule TypesTest do
     end
   end
 
+  defmacro quoted_merge(left, right) do
+    with {:ok, left, _} <- pattern_to_type(left, %{}),
+         {:ok, right, _} <- pattern_to_type(right, %{}) do
+      quote do
+        merge(unquote(Macro.escape(left)), unquote(Macro.escape(right)))
+      end
+    else
+      _ ->
+        quote do
+          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(left)), %{})
+          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(right)), %{})
+        end
+    end
+  end
+
+  describe "merge/2" do
+    test "merges types" do
+      assert quoted_merge(x :: integer(), x :: atom()) |> Enum.sort() ==
+             [:atom, :integer]
+
+      assert quoted_merge(1, 2) |> Enum.sort() ==
+             [{:value, 1}, {:value, 2}]
+
+      assert quoted_merge(1, x :: integer()) |> Enum.sort() ==
+             [:integer]
+
+      assert quoted_merge(x :: integer(), 1) |> Enum.sort() ==
+             [:integer]
+
+      assert quoted_merge(x :: integer(), :foo) |> Enum.sort() ==
+             [:integer, {:value, :foo}]
+    end
+  end
+
   defmacro quoted_of(expr) do
     quote do
       Types.of(unquote(Macro.escape(expr)))

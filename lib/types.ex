@@ -125,10 +125,10 @@ defmodule Types do
 
   defp merge_each(left, [right | righties]) do
     case qualify(left, right) do
+      :disjoint -> [right | merge_each(left, righties)]
       :superset -> [left | righties]
       :subset -> [right | righties]
       :equal -> [right | righties]
-      :disjoint -> [right | merge_each(left, righties)]
     end
   end
   defp merge_each(left, []) do
