@@ -60,33 +60,48 @@ defmodule TypesTest do
     with {:ok, left, _} <- pattern_to_type(left),
          {:ok, right, _} <- pattern_to_type(right) do
       quote do
-        merge(unquote(Macro.escape(left)), unquote(Macro.escape(right)))
+        merge(unquote(Macro.escape(left)), unquote(Macro.escape(right))) |> Enum.sort()
       end
     else
       _ ->
         quote do
-          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(left)))
-          assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(right)))
+          assert {:ok, _, _} = pattern_to_type(unquote(Macro.escape(left)))
+          assert {:ok, _, _} = pattern_to_type(unquote(Macro.escape(right)))
         end
     end
   end
 
   describe "merge/2" do
-    test "merges types" do
-      assert quoted_merge(x :: integer(), x :: atom()) |> Enum.sort() ==
+    test "merges base types" do
+      assert quoted_merge(x :: integer(), x :: atom()) ==
              [:atom, :integer]
 
-      assert quoted_merge(1, 2) |> Enum.sort() ==
+      assert quoted_merge(1, 2) ==
              [{:value, 1}, {:value, 2}]
 
-      assert quoted_merge(1, x :: integer()) |> Enum.sort() ==
+      assert quoted_merge(1, x :: integer()) ==
              [:integer]
 
-      assert quoted_merge(x :: integer(), 1) |> Enum.sort() ==
+      assert quoted_merge(x :: integer(), 1) ==
              [:integer]
 
-      assert quoted_merge(x :: integer(), :foo) |> Enum.sort() ==
+      assert quoted_merge(x :: integer(), :foo) ==
              [:integer, {:value, :foo}]
+    end
+
+    test "merges tuples" do
+      assert quoted_merge({}, {1}) ==
+             [{:tuple, [], 0}, {:tuple, [[{:value, 1}]], 1}]
+
+      assert quoted_merge({:ok, x :: integer()}, {:ok, 1}) ==
+             [{:tuple, [[{:value, :ok}], [:integer]], 2}]
+
+      assert quoted_merge({:ok, x :: integer(), y :: atom()}, {:ok, 1, z :: atom()}) ==
+             [{:tuple, [[{:value, :ok}], [:integer], [:atom]], 3}]
+
+      assert quoted_merge({:ok, x :: integer()}, {:error, 1}) ==
+             [{:tuple, [[{:value, :error}], [{:value, 1}]], 2},
+              {:tuple, [[{:value, :ok}], [:integer]], 2}]
     end
   end
 

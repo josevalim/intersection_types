@@ -51,6 +51,11 @@ defmodule Types do
 
   """
 
+  ## Patterns
+  # 1. adding types/patterns to receive
+  # 2. mixing typed with non-typed
+  # 3. the cost of having duplicate syntax
+
   ## Function annotations
   # 1. A variable on the right side must appear on all unions on the left side.
   # 2. May have multiple clauses. Each clause must have at least one matching implementation.
@@ -158,6 +163,7 @@ defmodule Types do
   defp unify_var(vars, counter, types) do
     case vars do
       %{^counter => _existing} ->
+        # TODO: Implement me
         raise "implement merging with disjoint check"
       %{} ->
         {:ok, Map.put(vars, counter, types)}
@@ -207,55 +213,52 @@ defmodule Types do
   going to be exactly the same.
   """
   def bind_and_merge(sum, _types, vars) when vars == %{}, do: sum
-  def bind_and_merge(sum, types, vars) when vars == %{}, do: merge(sum, bind(types, vars))
+  def bind_and_merge(sum, types, vars), do: merge(sum, bind(types, vars))
 
   @doc """
   Merges two union types.
   """
   def merge(left, []), do: left
   def merge([], right), do: right
-  def merge(left, right), do: Enum.reduce(left, right, &merge_each/2)
+  def merge(left, right), do: Enum.reduce(left, right, &merge_left_right/2)
 
-  defp merge_each(left, [right | righties]) do
-    case qualify(left, right) do
-      :disjoint -> [right | merge_each(left, righties)]
-      :superset -> [left | righties]
-      :subset -> [right | righties]
-      :equal -> [right | righties]
+  defp merge_left_right(left, [right | righties]) do
+    case merge_each(left, right) do
+      {:ok, type} -> [type | righties]
+      :error -> [right | merge_left_right(left, righties)]
     end
   end
-  defp merge_each(left, []) do
+  defp merge_left_right(left, []) do
     [left]
   end
 
-  # TODO: Remove qualify in favor of merge and port tests to both unify and merge.
-  @doc """
-  Qualifies the relationship between two strict types from left to right.
-  """
-  def qualify(type, type), do: :equal
+  defp merge_each(type, type), do: {:ok, type}
 
-  def qualify(:integer, {:value, int}) when is_integer(int), do: :superset
-  def qualify({:value, int}, :integer) when is_integer(int), do: :subset
+  defp merge_each(:integer, {:value, int}) when is_integer(int), do: {:ok, :integer}
+  defp merge_each({:value, int}, :integer) when is_integer(int), do: {:ok, :integer}
+  defp merge_each(:atom, {:value, atom}) when is_atom(atom), do: {:ok, :atom}
+  defp merge_each({:value, atom}, :atom) when is_atom(atom), do: {:ok, :atom}
 
-  def qualify(:atom, {:value, atom}) when is_atom(atom), do: :superset
-  def qualify({:value, atom}, :atom) when is_atom(atom), do: :subset
-
-  def qualify({:tuple, args1, arity}, {:tuple, args2, arity}) do
-    qualify_args(args1, args2, :equal)
-  end
-
-  def qualify(_, _), do: :disjoint
-
-  defp qualify_args([left | lefties], [right | righties], acc) do
-    case {qualify(left, right), acc} do
-      {:disjoint, _} -> :disjoint
-      {qualified, :equal} -> qualify_args(lefties, righties, qualified)
-      {qualified, qualified} -> qualify_args(lefties, righties, qualified)
-      _ -> :disjoint
+  defp merge_each({:tuple, args1, arity}, {:tuple, args2, arity}) do
+    case merge_args(args1, args2, [], false) do
+      {:ok, args} -> {:ok, {:tuple, args, arity}}
+      :error -> :error
     end
   end
-  defp qualify_args([], [], acc) do
-    acc
+
+  defp merge_each(_, _), do: :error
+
+  defp merge_args([left | lefties], [right | righties], acc, changed?) do
+    left = Enum.sort(left)
+    right = Enum.sort(right)
+    case left == right do
+      false when changed? -> :error
+      false -> merge_args(lefties, righties, [merge(left, right) | acc], true)
+      true -> merge_args(lefties, righties, [left | acc], changed?)
+    end
+  end
+  defp merge_args([], [], acc, _changed?) do
+    {:ok, Enum.reverse(acc)}
   end
 
   @doc """
@@ -371,6 +374,7 @@ defmodule Types do
   end
 
   defp of_apply_clause([type | types], head, body, sum) do
+    # TODO: Test use of bind and merge
     case unify(head, [type]) do
       {:ok, vars} -> of_apply_clause(types, head, body, bind_and_merge(sum, body, vars))
       {:error, _} = error -> error
