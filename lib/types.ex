@@ -66,15 +66,16 @@ defmodule Types do
 
   ## State helpers
 
-  @state %{vars: %{}}
+  @state %{bound: %{}, unbound: %{}}
 
-  defp merge_state(%{vars: vars1} = state, %{vars: vars2}) do
-    %{state | vars: Map.merge(vars1, vars2)}
+  defp replace_bound(state, %{bound: bound}) do
+    %{state | bound: bound}
   end
 
-  @doc """
-  Converts the given AST to its inner type.
-  """
+  defp merge_bound(%{bound: bound1} = state, %{bound: bound2}) do
+    %{state | bound: Map.merge(bound2, bound1)}
+  end
+
 
   ## Forbidden
   # [foo | bar] (developers must use cons(...) to avoid ambiguity)
@@ -103,20 +104,21 @@ defmodule Types do
   # :integer
   # :atom
 
-  def ast_to_type(ast) do
-    ast_to_type(ast, @state)
-  end
+  @doc """
+  Converts the given Type AST to its inner type.
+  """
+  def ast_to_type(ast, state \\ @state)
 
-  defp ast_to_type({:boolean, _, []}, state) do
+  def ast_to_type({:boolean, _, []}, state) do
     ok([{:value, true}, {:value, false}], state)
   end
-  defp ast_to_type({:integer, _, []}, state) do
+  def ast_to_type({:integer, _, []}, state) do
     ok([:integer], state)
   end
-  defp ast_to_type({:atom, _, []}, state) do
+  def ast_to_type({:atom, _, []}, state) do
     ok([:atom], state)
   end
-  defp ast_to_type(other, state) do
+  def ast_to_type(other, state) do
     literal(other, state, &ast_to_type/2)
   end
 
@@ -133,16 +135,21 @@ defmodule Types do
     unify_var(vars, counter, right)
   end
 
-  defp unify(lefties, righties, vars) do
-    # TODO: Remove Enum.reduce
-    Enum.reduce(righties, {:ok, vars}, fn right, acc ->
-      Enum.reduce(lefties, acc, fn
-        left, {:ok, vars} ->
-          unify_each(left, right, vars)
-        _, {:error, _} = error ->
-          error
-      end)
-    end)
+  defp unify([left | lefties], righties, vars) do
+    unify_left_right(left, righties, {lefties, righties}, vars)
+  end
+  defp unify([], _righties, vars) do
+    {:ok, vars}
+  end
+
+  defp unify_left_right(left, [right | righties], pair, vars) do
+    case unify_each(left, right, vars) do
+      {:ok, vars} -> unify_left_right(left, righties, pair, vars)
+      {:error, _} = error -> error
+    end
+  end
+  defp unify_left_right(_left, [], {lefties, righties}, vars) do
+    unify(lefties, righties, vars)
   end
 
   defp unify_each(type, type, vars), do: {:ok, vars}
@@ -262,41 +269,41 @@ defmodule Types do
   end
 
   @doc """
-  Converts the given pattern to a type.
+  Fetches the type from a pattern.
   """
-  def pattern_to_type(ast) do
-    pattern_to_type(ast, @state)
-  end
-
-  defp pattern_to_type(ast, %{vars: backup} = state) do
-    with {:ok, type, state} <- pattern_to_type(ast, backup, put_in(state.vars, %{})) do
-      {:ok, type, update_in(state.vars, &Map.merge(backup, &1))}
+  def pattern_to_type(ast, state \\ @state) do
+    case pattern(ast, %{state | unbound: %{}}) do
+      {:ok, type, %{bound: bound, unbound: unbound} = state} ->
+        {:ok, type, %{state | bound: Map.merge(bound, unbound), unbound: %{}}}
+      {:error, _, _} = error ->
+        error
     end
   end
 
-  defp pattern_to_type({:::, meta, [{var, _, ctx}, type_ast]},
-                       _backup, state) when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
+  defp pattern({:::, meta, [{var, _, ctx}, type_ast]}, state)
+       when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
     with {:ok, type, state} <- ast_to_type(type_ast, state) do
       pattern_var(meta, {var, ctx}, type, state)
     end
   end
 
-  defp pattern_to_type({:::, meta, [_, _]} = ann, _backup, _vars) do
+  defp pattern({:::, meta, [_, _]} = ann, _bound) do
     error(meta, {:invalid_annotation, ann})
   end
 
-  defp pattern_to_type(other, backup, vars) do
-    literal(other, vars, &pattern_to_type(&1, backup, &2))
+  defp pattern(other, bound) do
+    literal(other, bound, &pattern/2)
   end
 
-  defp pattern_var(meta, var_ctx, type, %{vars: vars} = state) do
-    # TODO: What if type is exactly the same?
-    case Map.fetch(vars, var_ctx) do
+  defp pattern_var(meta, var_ctx, type, %{unbound: unbound} = state) do
+    case Map.fetch(unbound, var_ctx) do
+      {:ok, ^type} ->
+        ok(type, state)
       {:ok, other} ->
         error(meta, {:bound_var, var_ctx, other, type})
       :error ->
-        vars = Map.put(vars, var_ctx, type)
-        ok(type, %{state | vars: vars})
+        unbound = Map.put(unbound, var_ctx, type)
+        ok(type, %{state | unbound: unbound})
     end
   end
 
@@ -307,9 +314,9 @@ defmodule Types do
     of(expr, @state)
   end
 
-  defp of({var, meta, ctx}, %{vars: vars} = state)
+  defp of({var, meta, ctx}, %{bound: bound} = state)
        when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
-    case Map.fetch(vars, {var, ctx}) do
+    case Map.fetch(bound, {var, ctx}) do
       {:ok, type} -> ok(type, state)
       :error -> error(meta, {:unbound_var, var, ctx})
     end
@@ -330,9 +337,9 @@ defmodule Types do
 
   defp of({:=, _, [{var, _, ctx}, right]}, state) when is_atom(var) and is_atom(ctx) do
     # TODO: Properly process left side and merge state
-    with {:ok, type, %{vars: vars} = state} <- of(right, state) do
-      vars = Map.put(vars, {var, ctx}, type)
-      ok(type, %{state | vars: vars})
+    with {:ok, type, %{bound: bound} = state} <- of(right, state) do
+      bound = Map.put(bound, {var, ctx}, type)
+      ok(type, %{state | bound: bound})
     end
   end
 
@@ -344,9 +351,9 @@ defmodule Types do
       case fun_type do
         [{:fn, clauses, ^arity}] ->
           [arg] = args
-          with {:ok, arg_type, arg_state} <- of(arg, state) do
+          with {:ok, arg_type, arg_state} <- of(arg, replace_bound(fun_state, state)) do
             case of_apply(clauses, arg_type, [], []) do
-              {:ok, body} -> ok(body, merge_state(fun_state, arg_state))
+              {:ok, body} -> ok(body, merge_bound(arg_state, fun_state))
               {:error, error} -> error(meta, {:disjoint_fn, error})
             end
           end
@@ -376,7 +383,7 @@ defmodule Types do
   defp of_apply_clause([type | types], head, body, sum) do
     # TODO: Test use of bind and merge
     case unify(head, [type]) do
-      {:ok, vars} -> of_apply_clause(types, head, body, bind_and_merge(sum, body, vars))
+      {:ok, bound} -> of_apply_clause(types, head, body, bind_and_merge(sum, body, bound))
       {:error, _} = error -> error
     end
   end
@@ -387,6 +394,7 @@ defmodule Types do
   # TODO: Support multiple args
   # TODO: Check if clauses have overlapping types
   # TODO: Remove Enum.reduce
+  # TODO: Keep the state because of the counter
   defp of_clauses(clauses, state) do
     Enum.reduce(clauses, {:ok, []}, fn
       {:->, _, [[arg], body]}, {:ok, clauses} ->
@@ -423,8 +431,8 @@ defmodule Types do
     ok_error =
       Enum.reduce(args, {:ok, [], 0, state}, fn arg, acc ->
         with {:ok, acc_args, acc_count, acc_state} <- acc,
-             {:ok, arg, arg_state} <- fun.(arg, state),
-             do: {:ok, [arg | acc_args], acc_count + 1, merge_state(acc_state, arg_state)}
+             {:ok, arg, arg_state} <- fun.(arg, replace_bound(acc_state, state)),
+             do: {:ok, [arg | acc_args], acc_count + 1, merge_bound(arg_state, acc_state)}
       end)
 
     case ok_error do
@@ -435,8 +443,8 @@ defmodule Types do
     end
   end
 
-  defp ok(type, vars) when is_list(type) do
-    {:ok, type, vars}
+  defp ok(type, state) when is_list(type) do
+    {:ok, type, state}
   end
 
   defp error(meta, args) do

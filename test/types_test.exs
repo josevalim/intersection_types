@@ -124,6 +124,16 @@ defmodule TypesTest do
       assert {:ok, [{:value, false}], _} = quoted_of(false)
     end
 
+    test "patterns" do
+      assert {:ok, [{:fn, [
+               {[[{:tuple, [[:integer], [:integer]], 2}]], [:integer]}
+             ], 1}], _} =
+             quoted_of(fn {x :: integer(), x :: integer()} -> x end)
+
+      assert {:error, _, {:bound_var, _, _, _}} =
+             quoted_of(fn {x :: integer(), x :: boolean()} -> x end)
+    end
+
     test "functions" do
       assert {:ok, [{:fn, [
                {[[{:value, true}, {:value, false}]], [{:value, true}, {:value, false}]}
@@ -154,14 +164,14 @@ defmodule TypesTest do
     test "tuples" do
       assert {:ok,
               [{:tuple, [[{:value, 1}], [{:value, 2}]], 2}],
-              %{vars: %{{:a, nil} => [{:value, 2}]}}} =
+              %{bound: %{{:a, nil} => [{:value, 2}]}}} =
              quoted_of({a = 1, a = 2})
     end
 
     test "blocks" do
       assert {:ok,
               [{:value, false}],
-              %{vars: %{{:a, nil} => [{:value, 2}]}}} =
+              %{bound: %{{:a, nil} => [{:value, 2}]}}} =
              quoted_of((true; a = 2; false))
     end
   end
