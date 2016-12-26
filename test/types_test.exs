@@ -164,14 +164,14 @@ defmodule TypesTest do
     test "tuples" do
       assert {:ok,
               [{:tuple, [[{:value, 1}], [{:value, 2}]], 2}],
-              %{bound: %{{:a, nil} => [{:value, 2}]}}} =
+              %{vars: %{{:a, nil} => [{:value, 2}]}}} =
              quoted_of({a = 1, a = 2})
     end
 
     test "blocks" do
       assert {:ok,
               [{:value, false}],
-              %{bound: %{{:a, nil} => [{:value, 2}]}}} =
+              %{vars: %{{:a, nil} => [{:value, 2}]}}} =
              quoted_of((true; a = 2; false))
     end
   end
