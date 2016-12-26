@@ -56,11 +56,11 @@ defmodule TypesTest do
   #   end
   # end
 
-  defmacro quoted_merge(left, right) do
+  defmacro quoted_union(left, right) do
     with {:ok, left, _} <- pattern_to_type(left),
          {:ok, right, _} <- pattern_to_type(right) do
       quote do
-        merge(unquote(Macro.escape(left)), unquote(Macro.escape(right))) |> Enum.sort()
+        union(unquote(Macro.escape(left)), unquote(Macro.escape(right))) |> Enum.sort()
       end
     else
       _ ->
@@ -71,35 +71,38 @@ defmodule TypesTest do
     end
   end
 
-  describe "merge/2" do
-    test "merges base types" do
-      assert quoted_merge(x :: integer(), x :: atom()) ==
+  describe "union/2" do
+    test "unions base types" do
+      assert quoted_union(x :: integer(), x :: atom()) ==
              [:atom, :integer]
 
-      assert quoted_merge(1, 2) ==
+      assert quoted_union(1, 2) ==
              [{:value, 1}, {:value, 2}]
 
-      assert quoted_merge(1, x :: integer()) ==
+      assert quoted_union(1, x :: integer()) ==
              [:integer]
 
-      assert quoted_merge(x :: integer(), 1) ==
+      assert quoted_union(x :: integer(), 1) ==
              [:integer]
 
-      assert quoted_merge(x :: integer(), :foo) ==
+      assert quoted_union(x :: integer(), :foo) ==
              [:integer, {:value, :foo}]
     end
 
-    test "merges tuples" do
-      assert quoted_merge({}, {1}) ==
+    test "unions tuples" do
+      assert quoted_union({}, {1}) ==
              [{:tuple, [], 0}, {:tuple, [[{:value, 1}]], 1}]
 
-      assert quoted_merge({:ok, x :: integer()}, {:ok, 1}) ==
+      assert quoted_union({:ok, x :: integer()}, {:ok, 1}) ==
              [{:tuple, [[{:value, :ok}], [:integer]], 2}]
 
-      assert quoted_merge({:ok, x :: integer(), y :: atom()}, {:ok, 1, z :: atom()}) ==
+      assert quoted_union({:ok, x :: integer()}, {:ok, x :: integer()}) ==
+             [{:tuple, [[{:value, :ok}], [:integer]], 2}]
+
+      assert quoted_union({:ok, x :: integer(), y :: atom()}, {:ok, 1, z :: atom()}) ==
              [{:tuple, [[{:value, :ok}], [:integer], [:atom]], 3}]
 
-      assert quoted_merge({:ok, x :: integer()}, {:error, 1}) ==
+      assert quoted_union({:ok, x :: integer()}, {:error, 1}) ==
              [{:tuple, [[{:value, :error}], [{:value, 1}]], 2},
               {:tuple, [[{:value, :ok}], [:integer]], 2}]
     end
@@ -111,64 +114,97 @@ defmodule TypesTest do
     end
   end
 
+  defp types({:ok, types, _}), do: types
+
   describe "of/1" do
     test "integers" do
-      assert {:ok, [{:value, 1}], _} = quoted_of(1)
-      assert {:ok, [{:value, 2}], _} = quoted_of(2)
+      assert quoted_of(1) |> types() == [{:value, 1}]
+      assert quoted_of(2) |> types() == [{:value, 2}]
     end
 
     test "atoms" do
-      assert {:ok, [{:value, nil}], _} = quoted_of(nil)
-      assert {:ok, [{:value, :foo}], _} = quoted_of(:foo)
-      assert {:ok, [{:value, true}], _} = quoted_of(true)
-      assert {:ok, [{:value, false}], _} = quoted_of(false)
+      assert quoted_of(nil) |> types() == [{:value, nil}]
+      assert quoted_of(:foo) |> types() == [{:value, :foo}]
+      assert quoted_of(true) |> types() == [{:value, true}]
+      assert quoted_of(false) |> types() == [{:value, false}]
     end
 
     test "patterns" do
-      assert {:ok, [{:fn, [
+      assert quoted_of(fn {x :: integer(), x :: integer()} -> x end) |> types() ==
+             [{:fn, [
                {[[{:tuple, [[:integer], [:integer]], 2}]], [:integer]}
-             ], 1}], _} =
-             quoted_of(fn {x :: integer(), x :: integer()} -> x end)
+             ], 1}]
 
       assert {:error, _, {:bound_var, _, _, _}} =
              quoted_of(fn {x :: integer(), x :: boolean()} -> x end)
     end
 
     test "functions" do
-      assert {:ok, [{:fn, [
+      assert quoted_of(fn bool :: boolean() -> bool end) |> types() ==
+             [{:fn, [
                {[[{:value, true}, {:value, false}]], [{:value, true}, {:value, false}]}
-             ], 1}], _} =
-             quoted_of(fn bool :: boolean() -> bool end)
+             ], 1}]
 
-      assert {:ok, [{:fn, [
+      assert quoted_of(fn false -> true; true -> false end) |> types() ==
+             [{:fn, [
                {[[{:value, false}]], [{:value, true}]},
                {[[{:value, true}]], [{:value, false}]}
-             ], 1}], _} =
-             quoted_of(fn false -> true; true -> false end)
+             ], 1}]
 
       assert {:error, _, {:invalid_fn, _, 1}} =
              quoted_of(fn true -> (true).(true) end)
     end
 
-    test "function calls" do
-      assert {:ok, [{:value, true}], _} =
-             quoted_of((fn false -> true; true -> false end).(false))
+    test "functions with holes" do
+      assert quoted_of(fn x -> x end) |> types() ==
+             [{:fn, [
+               {[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}]}
+             ], 1}]
 
-      assert {:ok, [{:value, false}], _} =
-             quoted_of((fn false -> true; true -> false end).(true))
+      assert quoted_of(fn x -> fn y -> y end end) |> types() ==
+             [{:fn, [
+               {[[{:var, {:x, nil}, 0}]],
+                [{:fn, [
+                  {[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}]}
+                ], 1}]}
+             ], 1}]
+
+      assert quoted_of(fn x -> fn y -> x end end) |> types() ==
+             [{:fn, [
+               {[[{:var, {:x, nil}, 0}]],
+                [{:fn, [
+                  {[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 0}]}
+                ], 1}]}
+             ], 1}]
+    end
+
+    test "function calls" do
+      assert quoted_of((fn false -> true; true -> false end).(false)) |> types() ==
+             [{:value, true}]
+
+      assert quoted_of((fn false -> true; true -> false end).(true)) |> types() ==
+             [{:value, false}]
 
       assert {:error, _, {:invalid_fn, _, 1}} =
              quoted_of((true).(true))
     end
 
-    test "tuples" do
+    test "function calls with holes" do
+      assert quoted_of((fn x -> x end).(true)) |> types() ==
+             [{:value, true}]
+
+      assert quoted_of(fn a -> (fn true -> true end).(a) end) |> types() ==
+             [{:fn, [{[[{:value, true}]], [{:value, true}]}], 1}]
+    end
+
+    test "tuples with vars" do
       assert {:ok,
               [{:tuple, [[{:value, 1}], [{:value, 2}]], 2}],
               %{vars: %{{:a, nil} => [{:value, 2}]}}} =
              quoted_of({a = 1, a = 2})
     end
 
-    test "blocks" do
+    test "blocks with vars" do
       assert {:ok,
               [{:value, false}],
               %{vars: %{{:a, nil} => [{:value, 2}]}}} =

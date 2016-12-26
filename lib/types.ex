@@ -68,7 +68,10 @@ defmodule Types do
 
   ## State helpers
 
-  @state %{vars: %{}, match: %{}, counter: 0}
+  # The :vars map keeps all Elixir variables and their types
+  # The :match map keeps all Elixir variables defined in a match
+  # The :unknown map keeps track of all unknown types (they have a counter)
+  @state %{vars: %{}, match: %{}, unknown: %{}, counter: 0}
 
   defp replace_vars(state, %{vars: vars}) do
     %{state | vars: vars}
@@ -132,14 +135,17 @@ defmodule Types do
   end
 
   # TODO: Test me (use qualify tests)
-  # TODO: Add right side unification once we figure out how to store those.
   defp unify([{:var, _, counter}], right, lvars, rvars) do
-    case lvars do
-      %{^counter => _existing} ->
-        # TODO: Implement me
-        raise "implement merging with disjoint check"
-      %{} ->
-        {:ok, Map.put(lvars, counter, right), rvars}
+    case unify_var(lvars, counter, right) do
+      {:ok, lvars} -> {:ok, lvars, rvars}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp unify(left, [{:var, _, counter}], lvars, rvars) do
+    case unify_var(rvars, counter, left) do
+      {:ok, rvars} -> {:ok, lvars, rvars}
+      {:error, _} = error -> error
     end
   end
 
@@ -158,6 +164,18 @@ defmodule Types do
   end
   defp unify_left_right(_left, [], {lefties, righties}, lvars, rvars) do
     unify(lefties, righties, lvars, rvars)
+  end
+
+  defp unify_var(vars, key, types) do
+    case vars do
+      %{^key => existing} ->
+        case intersection(existing, types) do
+          [] -> {:error, {:intersection, existing, types}}
+          types -> {:ok, Map.put(vars, key, types)}
+        end
+      %{} ->
+        {:ok, Map.put(vars, key, types)}
+    end
   end
 
   defp unify_each(type, type, lvars, rvars),
@@ -196,21 +214,27 @@ defmodule Types do
     types
   end
   def bind(types, vars) do
-    Enum.map(types, &bind_each(&1, vars))
+    bind_each(types, vars)
   end
 
-  defp bind_each({:var, _, counter}, vars) do
-    Map.fetch!(vars, counter)
+  defp bind_each([{:var, _, counter} = type | types], vars) do
+    case vars do
+      %{^counter => existing} -> existing ++ bind_each(types, vars)
+      %{} -> [type | bind_each(types, vars)]
+    end
   end
-  defp bind_each({:tuple, args, arity}, vars) do
-    {:tuple, bind_args(args, vars), arity}
+  defp bind_each([{:tuple, args, arity} | types], vars) do
+    [{:tuple, bind_args(args, vars), arity} | bind_each(types, vars)]
   end
-  defp bind_each({:fn, clauses, arity}, vars) do
+  defp bind_each([{:fn, clauses, arity} | types], vars) do
     clauses = Enum.map(clauses, fn {head, body} -> {bind_args(head, vars), bind(body, vars)} end)
-    {:fn, clauses, arity}
+    [{:fn, clauses, arity} | bind_each(types, vars)]
   end
-  defp bind_each(other, _vars) do
-    other
+  defp bind_each([type | types], vars) do
+    [type | bind_each(types, vars)]
+  end
+  defp bind_each([], _vars) do
+    []
   end
 
   defp bind_args(args, vars) do
@@ -218,53 +242,69 @@ defmodule Types do
   end
 
   @doc """
-  Binds and merges the types, but only if there are variables.
-
-  This is an optimization to avoid merging if all types are
-  going to be exactly the same.
+  Computes the union of two union types.
   """
-  def bind_and_merge(sum, _types, vars) when vars == %{}, do: sum
-  def bind_and_merge(sum, types, vars), do: merge(sum, bind(types, vars))
+  def union(left, []), do: left
+  def union([], right), do: right
+  def union(left, right), do: Enum.reduce(left, right, &union_left_right/2)
 
-  @doc """
-  Merges two union types.
-  """
-  def merge(left, []), do: left
-  def merge([], right), do: right
-  def merge(left, right), do: Enum.reduce(left, right, &merge_left_right/2)
-
-  defp merge_left_right(left, [right | righties]) do
-    case merge_each(left, right) do
+  defp union_left_right(left, [right | righties]) do
+    case merge(left, right) do
       {:ok, type} -> [type | righties]
-      :error -> [right | merge_left_right(left, righties)]
+      :error -> [right | union_left_right(left, righties)]
     end
   end
-  defp merge_left_right(left, []) do
+  defp union_left_right(left, []) do
     [left]
   end
 
-  defp merge_each(type, type), do: {:ok, type}
+  @doc """
+  Computes the intersection between two union types.
+  """
+  def intersection(lefties, righties) do
+    intersection(lefties, righties, [])
+  end
 
-  defp merge_each(:integer, {:value, int}) when is_integer(int), do: {:ok, :integer}
-  defp merge_each({:value, int}, :integer) when is_integer(int), do: {:ok, :integer}
-  defp merge_each(:atom, {:value, atom}) when is_atom(atom), do: {:ok, :atom}
-  defp merge_each({:value, atom}, :atom) when is_atom(atom), do: {:ok, :atom}
+  defp intersection([left | lefties], righties, acc) do
+    intersection(left, righties, {lefties, righties}, acc)
+  end
+  defp intersection([], _righties, acc) do
+    acc
+  end
 
-  defp merge_each({:tuple, args1, arity}, {:tuple, args2, arity}) do
+  defp intersection(left, [right | righties], pair, acc) do
+    case merge(left, right) do
+      {:ok, type} -> intersection(left, righties, [type | acc])
+      :error -> intersection(left, righties, pair, acc)
+    end
+  end
+  defp intersection(_left, [], {lefties, righties}, acc) do
+    intersection(lefties, righties, acc)
+  end
+
+  # Merging function used by union and intersection
+  defp merge(type, type), do: {:ok, type}
+
+  defp merge(:integer, {:value, int}) when is_integer(int), do: {:ok, :integer}
+  defp merge({:value, int}, :integer) when is_integer(int), do: {:ok, :integer}
+  defp merge(:atom, {:value, atom}) when is_atom(atom), do: {:ok, :atom}
+  defp merge({:value, atom}, :atom) when is_atom(atom), do: {:ok, :atom}
+
+  defp merge({:tuple, args1, arity}, {:tuple, args2, arity}) do
     case merge_args(args1, args2, [], false) do
       {:ok, args} -> {:ok, {:tuple, args, arity}}
       :error -> :error
     end
   end
 
-  defp merge_each(_, _), do: :error
+  defp merge(_, _), do: :error
 
   defp merge_args([left | lefties], [right | righties], acc, changed?) do
     left = Enum.sort(left)
     right = Enum.sort(right)
     case left == right do
       false when changed? -> :error
-      false -> merge_args(lefties, righties, [merge(left, right) | acc], true)
+      false -> merge_args(lefties, righties, [union(left, right) | acc], true)
       true -> merge_args(lefties, righties, [left | acc], changed?)
     end
   end
@@ -277,8 +317,8 @@ defmodule Types do
   """
   def pattern_to_type(ast, state \\ @state) do
     case pattern(ast, %{state | match: %{}}) do
-      {:ok, type, %{vars: vars, match: match} = state} ->
-        {:ok, type, %{state | vars: Map.merge(vars, match), match: %{}}}
+      {:ok, types, %{vars: vars, match: match} = state} ->
+        ok(types, %{state | vars: Map.merge(vars, match), match: %{}})
       {:error, _, _} = error ->
         error
     end
@@ -306,15 +346,14 @@ defmodule Types do
     literal(other, vars, &pattern/2)
   end
 
-  defp pattern_var(_meta, var_ctx, %{counter: counter, match: match} = state) do
+  defp pattern_var(_meta, var_ctx, %{match: match, counter: counter} = state) do
     case Map.fetch(match, var_ctx) do
       {:ok, type} ->
         ok(type, state)
       :error ->
-        counter = counter + 1
-        type = {:var, var_ctx, counter}
-        match = Map.put(match, var_ctx, type)
-        ok(type, %{state | match: match, counter: counter})
+        types = [{:var, var_ctx, counter}]
+        match = Map.put(match, var_ctx, types)
+        ok(types, %{state | match: match, counter: counter + 1})
     end
   end
 
@@ -372,10 +411,15 @@ defmodule Types do
       case fun_type do
         [{:fn, clauses, ^arity}] ->
           [arg] = args
-          with {:ok, arg_type, arg_state} <- of(arg, replace_vars(fun_state, state)) do
-            case of_apply(clauses, arg_type, [], []) do
-              {:ok, body} -> ok(body, lift_vars(arg_state, fun_state))
-              {:error, error} -> error(meta, {:disjoint_fn, error})
+          with {:ok, arg_types, arg_state} <- of(arg, replace_vars(fun_state, state)) do
+            %{unknown: unknown} = arg_state
+
+            case of_apply(clauses, arg_types, unknown, %{}, [], []) do
+              {:ok, acc_unknown, acc_body} ->
+                state = lift_vars(arg_state, fun_state)
+                ok(acc_body, %{state | unknown: Map.merge(unknown, acc_unknown)})
+              {:error, error} ->
+                error(meta, {:disjoint_fn, error})
             end
           end
         _ ->
@@ -388,29 +432,49 @@ defmodule Types do
     literal(value, state, &of/2)
   end
 
-  defp of_apply([{[head], body} | clauses], arg, sum, errors) do
-    case of_apply_clause(arg, head, body, body) do
-      {:ok, body} -> of_apply(clauses, arg, merge(sum, body), errors)
-      {:error, error} -> of_apply(clauses, arg, sum, [error | errors])
+  defp of_apply([{[head], body} | clauses], arg_types, unknown,
+                acc_unknown, acc_body, acc_errors) do
+    case of_apply_clause(arg_types, head, unknown, body, acc_unknown, acc_body) do
+      {:ok, acc_unknown, acc_body} ->
+        of_apply(clauses, arg_types, unknown, acc_unknown, acc_body, acc_errors)
+      {:error, error} ->
+        of_apply(clauses, arg_types, unknown, acc_unknown, acc_body, [error | acc_errors])
     end
   end
-  defp of_apply([], _arg, [], errors) do
+  defp of_apply([], _arg, _unknown, _acc_unknown, [], errors) do
     {:error, errors}
   end
-  defp of_apply([], _arg, sum, _errors) do
-    {:ok, sum}
+  defp of_apply([], _arg, _unknown, acc_unknown, acc_body, _errors) do
+    {:ok, acc_unknown, acc_body}
   end
 
   # TODO: Test use of bind and merge
-  # TODO: Document the logic behind this function with bind, unify and merge
-  defp of_apply_clause([type | types], head, body, sum) do
-    case unify(head, [type]) do
-      {:ok, vars, _} -> of_apply_clause(types, head, body, bind_and_merge(sum, body, vars))
-      {:error, _} = error -> error
+  # TODO: Document the logic behind this function with bind, unify and union
+  defp of_apply_clause([type | types], head, unknown, body, acc_unknown, acc_body) do
+    with {:ok, lvars, rvars} <- unify(head, [type]),
+         {:ok, acc_unknown} <- merge_unknown(Map.to_list(rvars), unknown, acc_unknown),
+         acc_body = union(acc_body, bind(body, lvars)),
+         do: of_apply_clause(types, head, unknown, body, acc_unknown, acc_body)
+  end
+  defp of_apply_clause([], _head, _unknown, _body, acc_unknown, acc_body) do
+    {:ok, acc_unknown, acc_body}
+  end
+
+  defp merge_unknown([{i, types} | kvs], unknown, acc_unknown) do
+    case unknown do
+      %{^i => existing} ->
+        case intersection(existing, types) do
+          [] ->
+            {:error, {:intersection, existing, types}}
+          types ->
+            merge_unknown(kvs, unknown, Map.update(acc_unknown, i, types, &union(&1, types)))
+        end
+      %{} ->
+        merge_unknown(kvs, unknown, Map.update(acc_unknown, i, types, &union(&1, types)))
     end
   end
-  defp of_apply_clause([], _head, _body, sum) do
-    {:ok, sum}
+  defp merge_unknown([], _unknown, acc_unknown) do
+    {:ok, acc_unknown}
   end
 
   # TODO: Support multiple args
@@ -421,8 +485,8 @@ defmodule Types do
     Enum.reduce(clauses, {:ok, []}, fn
       {:->, _, [[arg], body]}, {:ok, clauses} ->
         with {:ok, head, state} <- pattern_to_type(arg, state),
-             {:ok, body, _state} <- of(body, state),
-             do: {:ok, [{[head], body} | clauses]}
+             {:ok, body, %{unknown: unknown}} <- of(body, state),
+             do: {:ok, [{[bind(head, unknown)], body} | clauses]}
 
       _, {:error, _, _} = error ->
         error
@@ -474,6 +538,8 @@ defmodule Types do
   defp args([], acc_args, acc_count, acc_state, _state, _fun) do
     {:ok, Enum.reverse(acc_args), acc_count, acc_state}
   end
+
+  @compile {:inline, ok: 2, error: 2}
 
   defp ok(type, state) when is_list(type) do
     {:ok, type, state}
