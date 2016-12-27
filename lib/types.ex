@@ -70,8 +70,8 @@ defmodule Types do
 
   # The :vars map keeps all Elixir variables and their types
   # The :match map keeps all Elixir variables defined in a match
-  # The :unknown map keeps track of all unknown types (they have a counter)
-  @state %{vars: %{}, match: %{}, unknown: %{}, counter: 0}
+  # The :inferred map keeps track of all inferred types (they have a counter)
+  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0}
 
   defp replace_vars(state, %{vars: vars}) do
     %{state | vars: vars}
@@ -103,7 +103,8 @@ defmodule Types do
 
   ## Representation
   # {:value, val}
-  # {:fn, clauses, arity}
+  # {:fn, [{[head], body, inferred}], arity}
+  # {:defn, [{[head], body, inferred}], arity}
   # {:tuple, args, arity}
   # {:var, var_ctx, counter}
   # :integer
@@ -184,9 +185,6 @@ defmodule Types do
   defp unify_each(:atom, {:value, atom}, lvars, rvars) when is_atom(atom),
     do: {:ok, lvars, rvars}
 
-  defp unify_each(:integer, {:value, int}, lvars, rvars) when is_integer(int),
-    do: {:ok, lvars, rvars}
-
   defp unify_each({:tuple, lefties, arity}, {:tuple, righties, arity}, lvars, rvars) do
     case unify_args(lefties, righties, 0, lvars, rvars) do
       {:ok, _, _} = ok ->
@@ -208,37 +206,57 @@ defmodule Types do
   defp unify_args([], [], _pos, lvars, rvars), do: {:ok, lvars, rvars}
 
   @doc """
-  Binds the variables retrieved during unification.
+  Binds the variables to their types.
+
+  There are two mechanisms for binding: `:lazy` and `:eager`.
+
+  `:lazy` is used by the type system itself, as we don't want
+  to expand inside functions before their expansion nor expand
+  variables that point to other variables.
+
+  `:eager` is used to resolve all variables, including variables
+  that points to variables and nesting inside anonymous functions.
   """
-  def bind(types, vars) when vars == %{} do
+  def bind(types, vars, kind \\ :lazy)
+
+  def bind(types, vars, :lazy) when vars == %{} do
     types
   end
-  def bind(types, vars) do
-    bind_each(types, vars)
+  def bind(types, vars, kind) do
+    bind_each(types, vars, kind)
   end
 
-  defp bind_each([{:var, _, counter} = type | types], vars) do
-    case vars do
-      %{^counter => existing} -> existing ++ bind_each(types, vars)
-      %{} -> [type | bind_each(types, vars)]
-    end
+  defp bind_each([{:fn, clauses, arity} | types], vars, :eager) do
+    clauses =
+      for {head, body, inferred} <- clauses do
+        vars = Map.merge(inferred, vars)
+        {bind_args(head, vars, :eager), bind(body, vars, :eager), %{}}
+      end
+    [{:fn, clauses, arity} | bind_each(types, vars, :eager)]
   end
-  defp bind_each([{:tuple, args, arity} | types], vars) do
-    [{:tuple, bind_args(args, vars), arity} | bind_each(types, vars)]
+  defp bind_each([{:var, _, counter} = type | types], vars, kind) do
+    bind_lookup(vars, counter, kind, [type]) ++ bind_each(types, vars, kind)
   end
-  defp bind_each([{:fn, clauses, arity} | types], vars) do
-    clauses = Enum.map(clauses, fn {head, body} -> {bind_args(head, vars), bind(body, vars)} end)
-    [{:fn, clauses, arity} | bind_each(types, vars)]
+  defp bind_each([{:tuple, args, arity} | types], vars, kind) do
+    [{:tuple, bind_args(args, vars, kind), arity} | bind_each(types, vars, kind)]
   end
-  defp bind_each([type | types], vars) do
-    [type | bind_each(types, vars)]
+  defp bind_each([type | types], vars, kind) do
+    [type | bind_each(types, vars, kind)]
   end
-  defp bind_each([], _vars) do
+  defp bind_each([], _vars, _kind) do
     []
   end
 
-  defp bind_args(args, vars) do
-    Enum.map(args, &bind(&1, vars))
+  defp bind_args(args, vars, kind) do
+    Enum.map(args, &bind(&1, vars, kind))
+  end
+
+  defp bind_lookup(vars, counter, kind, default) do
+    case vars do
+      %{^counter => existing} when kind == :eager -> bind_each(existing, vars, kind)
+      %{^counter => existing} -> existing
+      %{} -> default
+    end
   end
 
   @doc """
@@ -266,27 +284,26 @@ defmodule Types do
   end
 
   defp intersection([left | lefties], righties, acc) do
-    intersection(left, righties, {lefties, righties}, acc)
+    intersection(left, righties, lefties, righties, acc)
   end
   defp intersection([], _righties, acc) do
     acc
   end
 
-  defp intersection(left, [right | righties], pair, acc) do
-    case merge(left, right) do
-      {:ok, type} -> intersection(left, righties, [type | acc])
-      :error -> intersection(left, righties, pair, acc)
+  defp intersection(left, [head | tail], lefties, righties, acc) do
+    # TODO: Intersecting atom and :foo returns what?
+    case merge(left, head) do
+      {:ok, type} -> intersection(lefties, righties, [type | acc])
+      :error -> intersection(left, tail, lefties, righties, acc)
     end
   end
-  defp intersection(_left, [], {lefties, righties}, acc) do
+  defp intersection(_left, [], lefties, righties, acc) do
     intersection(lefties, righties, acc)
   end
 
   # Merging function used by union and intersection
   defp merge(type, type), do: {:ok, type}
 
-  defp merge(:integer, {:value, int}) when is_integer(int), do: {:ok, :integer}
-  defp merge({:value, int}, :integer) when is_integer(int), do: {:ok, :integer}
   defp merge(:atom, {:value, atom}) when is_atom(atom), do: {:ok, :atom}
   defp merge({:value, atom}, :atom) when is_atom(atom), do: {:ok, :atom}
 
@@ -379,7 +396,7 @@ defmodule Types do
   defp of({var, meta, ctx}, %{vars: vars} = state)
        when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
     case Map.fetch(vars, {var, ctx}) do
-      {:ok, type} -> ok(type, state)
+      {:ok, types} -> ok(types, state)
       :error -> error(meta, {:unbound_var, var, ctx})
     end
   end
@@ -394,11 +411,18 @@ defmodule Types do
     of_block(args, state)
   end
 
-  defp of({:=, _, [{var, _, ctx}, right]}, state) when is_atom(var) and is_atom(ctx) do
-    # TODO: Properly process left side and merge state
-    with {:ok, type, %{vars: vars} = state} <- of(right, state) do
-      vars = Map.put(vars, {var, ctx}, type)
-      ok(type, %{state | vars: vars})
+  defp of({:=, meta, [left, right]}, state) do
+    with {:ok, right, right_state} <- of(right, state),
+         {:ok, left, left_state} <- pattern_to_type(left, replace_vars(right_state, state)) do
+      state = lift_vars(left_state, right_state)
+      %{inferred: inferred} = state
+
+      case of_match(left, right, inferred, %{}, []) do
+        {:ok, acc_inferred, acc_body} ->
+          ok(acc_body, %{state | inferred: Map.merge(inferred, acc_inferred)})
+        {:error, error} ->
+          error(meta, {:disjoint_match, error})
+      end
     end
   end
 
@@ -412,12 +436,13 @@ defmodule Types do
         [{:fn, clauses, ^arity}] ->
           [arg] = args
           with {:ok, arg_types, arg_state} <- of(arg, replace_vars(fun_state, state)) do
-            %{unknown: unknown} = arg_state
+            state = lift_vars(arg_state, fun_state)
+            %{inferred: inferred} = state
 
-            case of_apply(clauses, arg_types, unknown, %{}, [], []) do
-              {:ok, acc_unknown, acc_body} ->
-                state = lift_vars(arg_state, fun_state)
-                ok(acc_body, %{state | unknown: Map.merge(unknown, acc_unknown)})
+            case of_apply(clauses, arg_types, inferred, %{}, [], []) do
+              {:ok, acc_inferred, acc_body} ->
+                inferred = intersect_inferred(inferred, Map.to_list(acc_inferred))
+                ok(acc_body, %{state | inferred: inferred})
               {:error, error} ->
                 error(meta, {:disjoint_fn, error})
             end
@@ -432,49 +457,86 @@ defmodule Types do
     literal(value, state, &of/2)
   end
 
-  defp of_apply([{[head], body} | clauses], arg_types, unknown,
-                acc_unknown, acc_body, acc_errors) do
-    case of_apply_clause(arg_types, head, unknown, body, acc_unknown, acc_body) do
-      {:ok, acc_unknown, acc_body} ->
-        of_apply(clauses, arg_types, unknown, acc_unknown, acc_body, acc_errors)
+  defp of_apply([{[head], body, body_inferred} | clauses], arg_types, inferred,
+                acc_inferred, acc_body, acc_errors) do
+    case of_apply_clause(arg_types, head, inferred, body, body_inferred, acc_inferred, acc_body) do
+      {:ok, acc_inferred, acc_body} ->
+        of_apply(clauses, arg_types, inferred, acc_inferred, acc_body, acc_errors)
       {:error, error} ->
-        of_apply(clauses, arg_types, unknown, acc_unknown, acc_body, [error | acc_errors])
+        of_apply(clauses, arg_types, inferred, acc_inferred, acc_body, [error | acc_errors])
     end
   end
-  defp of_apply([], _arg, _unknown, _acc_unknown, [], errors) do
+  defp of_apply([], _arg, _inferred, _acc_inferred, [], errors) do
     {:error, errors}
   end
-  defp of_apply([], _arg, _unknown, acc_unknown, acc_body, _errors) do
-    {:ok, acc_unknown, acc_body}
+  defp of_apply([], _arg, _inferred, acc_inferred, acc_body, _errors) do
+    {:ok, acc_inferred, acc_body}
   end
 
   # TODO: Test use of bind and merge
   # TODO: Document the logic behind this function with bind, unify and union
-  defp of_apply_clause([type | types], head, unknown, body, acc_unknown, acc_body) do
+  defp of_apply_clause([type | types], head, inferred, body, body_inferred, acc_inferred, acc_body) do
     with {:ok, lvars, rvars} <- unify(head, [type]),
-         {:ok, acc_unknown} <- merge_unknown(Map.to_list(rvars), unknown, acc_unknown),
-         acc_body = union(acc_body, bind(body, lvars)),
-         do: of_apply_clause(types, head, unknown, body, acc_unknown, acc_body)
+         {:ok, acc_inferred} <- merge_inferred(Map.to_list(rvars), inferred, acc_inferred),
+         acc_body = union(acc_body, bind(body, intersect_inferred(body_inferred, Map.to_list(lvars)))),
+         do: of_apply_clause(types, head, inferred, body, body_inferred, acc_inferred, acc_body)
   end
-  defp of_apply_clause([], _head, _unknown, _body, acc_unknown, acc_body) do
-    {:ok, acc_unknown, acc_body}
+  defp of_apply_clause([], _head, _inferred, _body, _body_inferred, acc_inferred, acc_body) do
+    {:ok, acc_inferred, acc_body}
   end
 
-  defp merge_unknown([{i, types} | kvs], unknown, acc_unknown) do
-    case unknown do
+  # All of the possible types returned on the right side
+  # must be matched on the left side. We must also unify
+  # values on the right side with expressions on the left.
+  # For example, the type:
+  #
+  #     fn z ->
+  #       {:ok, x} = (fn y -> {y, :error} end).(z)
+  #       {z, x}
+  #     end
+  #
+  # Should infer that:
+  #
+  #   x is :error
+  #   y is :ok
+  #   z is :ok
+  #
+  # And the function must return {:ok, :error}.
+  defp of_match(head, [type | types], inferred, acc_inferred, acc_body) do
+    with {:ok, lvars, rvars} <- unify(head, [type]),
+         {:ok, acc_inferred} <- merge_inferred(Map.to_list(rvars), inferred, acc_inferred),
+         {:ok, acc_inferred} <- merge_inferred(Map.to_list(lvars), inferred, acc_inferred),
+         acc_body = union(acc_body, bind([type], acc_inferred)),
+         do: of_match(head, types, inferred, acc_inferred, acc_body)
+  end
+
+  defp of_match(_head, [], _inferred, acc_inferred, acc_body) do
+    {:ok, acc_inferred, acc_body}
+  end
+
+  defp merge_inferred([{i, types} | kvs], inferred, acc_inferred) do
+    case inferred do
       %{^i => existing} ->
         case intersection(existing, types) do
           [] ->
             {:error, {:intersection, existing, types}}
           types ->
-            merge_unknown(kvs, unknown, Map.update(acc_unknown, i, types, &union(&1, types)))
+            merge_inferred(kvs, inferred, Map.update(acc_inferred, i, types, &union(&1, types)))
         end
       %{} ->
-        merge_unknown(kvs, unknown, Map.update(acc_unknown, i, types, &union(&1, types)))
+        merge_inferred(kvs, inferred, Map.update(acc_inferred, i, types, &union(&1, types)))
     end
   end
-  defp merge_unknown([], _unknown, acc_unknown) do
-    {:ok, acc_unknown}
+  defp merge_inferred([], _inferred, acc_inferred) do
+    {:ok, acc_inferred}
+  end
+
+  defp intersect_inferred(inferred, [{i, types} | acc_inferred]) do
+    inferred = Map.update(inferred, i, types, &intersection(&1, types))
+    intersect_inferred(inferred, acc_inferred)
+  end
+  defp intersect_inferred(inferred, []) do
+    inferred
   end
 
   # TODO: Support multiple args
@@ -485,8 +547,8 @@ defmodule Types do
     Enum.reduce(clauses, {:ok, []}, fn
       {:->, _, [[arg], body]}, {:ok, clauses} ->
         with {:ok, head, state} <- pattern_to_type(arg, state),
-             {:ok, body, %{unknown: unknown}} <- of(body, state),
-             do: {:ok, [{[bind(head, unknown)], body} | clauses]}
+             {:ok, body, %{inferred: inferred}} <- of(body, state),
+             do: {:ok, [{[head], body, inferred} | clauses]}
 
       _, {:error, _, _} = error ->
         error
@@ -505,8 +567,11 @@ defmodule Types do
 
   ## Helpers
 
-  # TODO: Remove integers from values and convert to ":integer"
-  defp literal(value, state, _fun) when is_integer(value) or is_atom(value) do
+  defp literal(value, state, _fun) when is_integer(value) do
+    ok([:integer], state)
+  end
+
+  defp literal(value, state, _fun) when is_atom(value) do
     ok([{:value, value}], state)
   end
   defp literal({left, right}, state, fun) do
