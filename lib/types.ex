@@ -103,8 +103,8 @@ defmodule Types do
 
   ## Representation
   # {:value, val}
-  # {:fn, [{[head], body, inferred}], arity}
-  # {:defn, [{[head], body, inferred}], arity}
+  # {:fn, [clauses], arity}
+  # {:defn, [clauses], arity}
   # {:tuple, args, arity}
   # {:var, var_ctx, counter}
   # :integer
@@ -210,51 +210,48 @@ defmodule Types do
 
   There are two mechanisms for binding: `:lazy` and `:eager`.
 
-  `:lazy` is used by the type system itself, as we don't want
-  to expand inside functions before their expansion nor expand
-  variables that point to other variables.
+  `:lazy` is used by the type system itself as we don't want
+  to expand variables that point to other variables.
 
   `:eager` is used to resolve all variables, including variables
-  that points to variables and nesting inside anonymous functions.
+  that points to variables.
   """
-  def bind(types, vars, kind \\ :lazy)
+  def bind(types, vars)
 
-  def bind(types, vars, :lazy) when vars == %{} do
+  def bind(types, vars) when vars == %{} do
     types
   end
-  def bind(types, vars, kind) do
-    bind_each(types, vars, kind)
+  def bind(types, vars) do
+    bind_each(types, vars)
   end
 
-  defp bind_each([{:fn, clauses, arity} | types], vars, :eager) do
+  defp bind_each([{:fn, clauses, arity} | types], vars) do
     clauses =
-      for {head, body, inferred} <- clauses do
-        vars = Map.merge(inferred, vars)
-        {bind_args(head, vars, :eager), bind(body, vars, :eager), %{}}
+      for {head, body} <- clauses do
+        {bind_args(head, vars), bind(body, vars)}
       end
-    [{:fn, clauses, arity} | bind_each(types, vars, :eager)]
+    [{:fn, clauses, arity} | bind_each(types, vars)]
   end
-  defp bind_each([{:var, _, counter} = type | types], vars, kind) do
-    bind_lookup(vars, counter, kind, [type]) ++ bind_each(types, vars, kind)
+  defp bind_each([{:var, _, counter} = type | types], vars) do
+    bind_lookup(vars, counter, [type]) ++ bind_each(types, vars)
   end
-  defp bind_each([{:tuple, args, arity} | types], vars, kind) do
-    [{:tuple, bind_args(args, vars, kind), arity} | bind_each(types, vars, kind)]
+  defp bind_each([{:tuple, args, arity} | types], vars) do
+    [{:tuple, bind_args(args, vars), arity} | bind_each(types, vars)]
   end
-  defp bind_each([type | types], vars, kind) do
-    [type | bind_each(types, vars, kind)]
+  defp bind_each([type | types], vars) do
+    [type | bind_each(types, vars)]
   end
-  defp bind_each([], _vars, _kind) do
+  defp bind_each([], _vars) do
     []
   end
 
-  defp bind_args(args, vars, kind) do
-    Enum.map(args, &bind(&1, vars, kind))
+  defp bind_args(args, vars) do
+    Enum.map(args, &bind(&1, vars))
   end
 
-  defp bind_lookup(vars, counter, kind, default) do
+  defp bind_lookup(vars, counter, default) do
     case vars do
-      %{^counter => existing} when kind == :eager -> bind_each(existing, vars, kind)
-      %{^counter => existing} -> existing
+      %{^counter => existing} -> bind_each(existing, vars)
       %{} -> default
     end
   end
@@ -326,7 +323,7 @@ defmodule Types do
     end
   end
   defp merge_args([], [], acc, _changed?) do
-    {:ok, Enum.reverse(acc)}
+    {:ok, :lists.reverse(acc)}
   end
 
   @doc """
@@ -399,8 +396,8 @@ defmodule Types do
   end
 
   defp of({:fn, _, clauses}, state) do
-    with {:ok, clauses} <- of_clauses(clauses, state) do
-      ok([{:fn, :lists.reverse(clauses), 1}], state)
+    with {:ok, clauses, state} <- of_clauses(clauses, state) do
+      ok([{:fn, clauses, 1}], state)
     end
   end
 
@@ -453,9 +450,9 @@ defmodule Types do
     literal(value, state, &of/2)
   end
 
-  defp of_apply([{[head], body, body_inferred} | clauses], arg_types, inferred,
+  defp of_apply([{[head], body} | clauses], arg_types, inferred,
                 acc_inferred, acc_body, acc_errors) do
-    case of_apply_clause(arg_types, head, inferred, body, body_inferred, acc_inferred, acc_body) do
+    case of_apply_clause(arg_types, head, inferred, body, acc_inferred, acc_body) do
       {:ok, acc_inferred, acc_body} ->
         of_apply(clauses, arg_types, inferred, acc_inferred, acc_body, acc_errors)
       {:error, error} ->
@@ -471,13 +468,13 @@ defmodule Types do
 
   # TODO: Test use of bind and merge
   # TODO: Document the logic behind this function with bind, unify and union
-  defp of_apply_clause([type | types], head, inferred, body, body_inferred, acc_inferred, acc_body) do
+  defp of_apply_clause([type | types], head, inferred, body, acc_inferred, acc_body) do
     with {:ok, lvars, rvars} <- unify(head, [type]),
          {:ok, acc_inferred} <- merge_inferred(inferred, acc_inferred, Map.to_list(rvars)),
          acc_body = union(acc_body, bind(body, lvars)),
-         do: of_apply_clause(types, head, inferred, body, body_inferred, acc_inferred, acc_body)
+         do: of_apply_clause(types, head, inferred, body, acc_inferred, acc_body)
   end
-  defp of_apply_clause([], _head, _inferred, _body, _body_inferred, acc_inferred, acc_body) do
+  defp of_apply_clause([], _head, _inferred, _body, acc_inferred, acc_body) do
     {:ok, acc_inferred, acc_body}
   end
 
@@ -529,39 +526,21 @@ defmodule Types do
     {:ok, acc_inferred}
   end
 
-  defp intersect_inferred(inferred, [{i, types} | kvs]) do
-    case inferred do
-      %{^i => existing} ->
-        case intersection(existing, types) do
-          [] ->
-            {:error, {:intersection, existing, types}}
-          types ->
-            inferred = Map.put(inferred, i, types)
-            intersect_inferred(inferred, kvs)
-        end
-      %{} ->
-        inferred = Map.put(inferred, i, types)
-        intersect_inferred(inferred, kvs)
-    end
-  end
-  defp intersect_inferred(inferred, []) do
-    {:ok, inferred}
-  end
-
   # TODO: Support multiple args
   # TODO: Check if clauses have overlapping types
-  # TODO: Remove Enum.reduce
-  # TODO: Keep the state because of the counter
   defp of_clauses(clauses, state) do
-    Enum.reduce(clauses, {:ok, []}, fn
-      {:->, _, [[arg], body]}, {:ok, clauses} ->
-        with {:ok, head, state} <- pattern_to_type(arg, state),
-             {:ok, body, %{inferred: inferred}} <- of(body, state),
-             do: {:ok, [{bind_args([head], inferred, :lazy), bind(body, inferred, :lazy), inferred} | clauses]}
+    of_clauses(clauses, state, [], state)
+  end
 
-      _, {:error, _, _} = error ->
-        error
-    end)
+  defp of_clauses([{:->, _, [[arg], body]} | clauses], state, acc_clauses, acc_state) do
+    with {:ok, head, acc_state} <- pattern_to_type(arg, acc_state),
+         {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state),
+         do: of_clauses(clauses, state,
+                        [{bind_args([head], inferred), bind(body, inferred)} | acc_clauses],
+                        replace_vars(acc_state, state))
+  end
+  defp of_clauses([], _state, acc_clauses, acc_state) do
+    {:ok, :lists.reverse(acc_clauses), acc_state}
   end
 
   defp of_block([arg], state) do
@@ -610,7 +589,7 @@ defmodule Types do
     end
   end
   defp args([], acc_args, acc_count, acc_state, _state, _fun) do
-    {:ok, Enum.reverse(acc_args), acc_count, acc_state}
+    {:ok, :lists.reverse(acc_args), acc_count, acc_state}
   end
 
   @compile {:inline, ok: 2, error: 2}
