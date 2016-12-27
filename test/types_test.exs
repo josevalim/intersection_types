@@ -67,7 +67,7 @@ defmodule TypesTest do
       assert quoted_of((fn false -> true; true -> false end).(true)) |> types() ==
              [{:value, false}]
 
-      assert {:error, _, {:disjoint_fn, _}} =
+      assert {:error, _, {:disjoint_apply, _}} =
              quoted_of(fn x :: boolean() ->
                (fn true -> true end).(x)
              end)
@@ -76,6 +76,46 @@ defmodule TypesTest do
     test "apply with inference" do
       assert quoted_of((fn x -> x end).(true)) |> types() ==
              [{:value, true}]
+
+      assert quoted_of(fn x ->
+        (fn true -> true end).(x)
+        (fn z ->
+          (fn true -> true end).(z)
+          z
+        end).(x)
+      end) |> types() ==
+        [{:fn, [
+          {[[value: true]], [value: true], %{}}
+        ], 1}]
+
+      assert quoted_of(fn x ->
+        (fn y :: boolean() -> y end).(x)
+        (fn z ->
+          (fn true -> true end).(z)
+          z
+        end).(x)
+      end) |> types() ==
+        [{:fn, [
+          {[[value: true]], [value: true], %{}}
+        ], 1}]
+
+      assert {:error, _, {:disjoint_match, _}} =
+        quoted_of(fn x ->
+          false = (fn y :: boolean() -> y end).(x)
+          (fn z ->
+            (fn true -> true end).(z)
+            z
+          end).(x)
+        end)
+
+      assert {:error, _, {:disjoint_apply, _}} =
+        quoted_of(fn x ->
+          (fn y :: integer() -> y end).(x)
+          (fn z ->
+            (fn true -> true end).(z)
+            z
+          end).(x)
+        end)
     end
 
     test "match" do

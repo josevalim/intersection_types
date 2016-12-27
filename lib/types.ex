@@ -348,9 +348,6 @@ defmodule Types do
     end
   end
 
-  # TODO: Add tests for a
-  # TODO: Add tests for {a, a}
-  # TODO: Add tests for {a::boolean(), a}
   defp pattern({var, meta, ctx}, state) when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
     pattern_var(meta, {var, ctx}, state)
   end
@@ -441,10 +438,9 @@ defmodule Types do
 
             case of_apply(clauses, arg_types, inferred, %{}, [], []) do
               {:ok, acc_inferred, acc_body} ->
-                inferred = intersect_inferred(inferred, Map.to_list(acc_inferred))
-                ok(acc_body, %{state | inferred: inferred})
+                ok(acc_body, %{state | inferred: Map.merge(inferred, acc_inferred)})
               {:error, error} ->
-                error(meta, {:disjoint_fn, error})
+                error(meta, {:disjoint_apply, error})
             end
           end
         _ ->
@@ -477,8 +473,8 @@ defmodule Types do
   # TODO: Document the logic behind this function with bind, unify and union
   defp of_apply_clause([type | types], head, inferred, body, body_inferred, acc_inferred, acc_body) do
     with {:ok, lvars, rvars} <- unify(head, [type]),
-         {:ok, acc_inferred} <- merge_inferred(Map.to_list(rvars), inferred, acc_inferred),
-         acc_body = union(acc_body, bind(body, intersect_inferred(body_inferred, Map.to_list(lvars)))),
+         {:ok, acc_inferred} <- merge_inferred(inferred, acc_inferred, Map.to_list(rvars)),
+         acc_body = union(acc_body, bind(body, lvars)),
          do: of_apply_clause(types, head, inferred, body, body_inferred, acc_inferred, acc_body)
   end
   defp of_apply_clause([], _head, _inferred, _body, _body_inferred, acc_inferred, acc_body) do
@@ -497,15 +493,15 @@ defmodule Types do
   #
   # Should infer that:
   #
-  #   x is :error
-  #   y is :ok
-  #   z is :ok
+  #     x is :error
+  #     y is :ok
+  #     z is :ok
   #
   # And the function must return {:ok, :error}.
   defp of_match(head, [type | types], inferred, acc_inferred, acc_body) do
     with {:ok, lvars, rvars} <- unify(head, [type]),
-         {:ok, acc_inferred} <- merge_inferred(Map.to_list(rvars), inferred, acc_inferred),
-         {:ok, acc_inferred} <- merge_inferred(Map.to_list(lvars), inferred, acc_inferred),
+         {:ok, acc_inferred} <- merge_inferred(inferred, acc_inferred, Map.to_list(rvars)),
+         {:ok, acc_inferred} <- merge_inferred(inferred, acc_inferred, Map.to_list(lvars)),
          acc_body = union(acc_body, bind([type], acc_inferred)),
          do: of_match(head, types, inferred, acc_inferred, acc_body)
   end
@@ -514,29 +510,42 @@ defmodule Types do
     {:ok, acc_inferred, acc_body}
   end
 
-  defp merge_inferred([{i, types} | kvs], inferred, acc_inferred) do
+  defp merge_inferred(inferred, acc_inferred, [{i, types} | kvs]) do
     case inferred do
       %{^i => existing} ->
         case intersection(existing, types) do
           [] ->
             {:error, {:intersection, existing, types}}
           types ->
-            merge_inferred(kvs, inferred, Map.update(acc_inferred, i, types, &union(&1, types)))
+            acc_inferred = Map.update(acc_inferred, i, types, &union(&1, types))
+            merge_inferred(inferred, acc_inferred, kvs)
         end
       %{} ->
-        merge_inferred(kvs, inferred, Map.update(acc_inferred, i, types, &union(&1, types)))
+        acc_inferred = Map.update(acc_inferred, i, types, &union(&1, types))
+        merge_inferred(inferred, acc_inferred, kvs)
     end
   end
-  defp merge_inferred([], _inferred, acc_inferred) do
+  defp merge_inferred(_inferred, acc_inferred, []) do
     {:ok, acc_inferred}
   end
 
-  defp intersect_inferred(inferred, [{i, types} | acc_inferred]) do
-    inferred = Map.update(inferred, i, types, &intersection(&1, types))
-    intersect_inferred(inferred, acc_inferred)
+  defp intersect_inferred(inferred, [{i, types} | kvs]) do
+    case inferred do
+      %{^i => existing} ->
+        case intersection(existing, types) do
+          [] ->
+            {:error, {:intersection, existing, types}}
+          types ->
+            inferred = Map.put(inferred, i, types)
+            intersect_inferred(inferred, kvs)
+        end
+      %{} ->
+        inferred = Map.put(inferred, i, types)
+        intersect_inferred(inferred, kvs)
+    end
   end
   defp intersect_inferred(inferred, []) do
-    inferred
+    {:ok, inferred}
   end
 
   # TODO: Support multiple args
@@ -548,7 +557,7 @@ defmodule Types do
       {:->, _, [[arg], body]}, {:ok, clauses} ->
         with {:ok, head, state} <- pattern_to_type(arg, state),
              {:ok, body, %{inferred: inferred}} <- of(body, state),
-             do: {:ok, [{[head], body, inferred} | clauses]}
+             do: {:ok, [{bind_args([head], inferred, :lazy), bind(body, inferred, :lazy), inferred} | clauses]}
 
       _, {:error, _, _} = error ->
         error
