@@ -222,62 +222,6 @@ defmodule TypesTest do
     end
   end
 
-  # end
-
-  # defmacro quoted_qualify(left, right) do
-  #   with {:ok, [left], _} <- pattern_to_type(left),
-  #        {:ok, [right], _} <- pattern_to_type(right) do
-  #     quote do
-  #       qualify(unquote(Macro.escape(left)), unquote(Macro.escape(right)))
-  #     end
-  #   else
-  #     _ ->
-  #       quote do
-  #         assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(left)))
-  #         assert {:ok, [_], _} = pattern_to_type(unquote(Macro.escape(right)))
-  #       end
-  #   end
-  # end
-
-  # describe "qualify/2" do
-  #   test "superset and subset" do
-  #     assert quoted_qualify(x :: integer(), 1) == :superset
-  #     assert quoted_qualify(1, x :: integer()) == :subset
-
-  #     assert quoted_qualify(x :: atom(), :foo) == :superset
-  #     assert quoted_qualify(:foo, x :: atom()) == :subset
-
-  #     assert quoted_qualify(x :: atom(), true) == :superset
-  #     assert quoted_qualify(true, x :: atom()) == :subset
-  #   end
-
-  #   test "equal" do
-  #     assert quoted_qualify(x :: integer(), x :: integer()) == :equal
-  #     assert quoted_qualify(:foo, :foo) == :equal
-  #     assert quoted_qualify(1, 1) == :equal
-  #   end
-
-  #   test "disjoint" do
-  #     assert quoted_qualify(1, 0) == :disjoint
-  #     assert quoted_qualify(0, 1) == :disjoint
-
-  #     assert quoted_qualify(x :: atom(), 1) == :disjoint
-  #     assert quoted_qualify(1, x :: atom()) == :disjoint
-
-  #     assert quoted_qualify(x :: integer(), :foo) == :disjoint
-  #     assert quoted_qualify(:foo, x :: integer()) == :disjoint
-  #   end
-
-  #   test "tuples" do
-  #     assert quoted_qualify({:ok, 1}, {x :: atom(), y :: integer()}) == :subset
-  #     assert quoted_qualify({x :: atom(), y :: integer()}, {:ok, 1}) == :superset
-
-  #     assert quoted_qualify({}, {}) == :equal
-  #     assert quoted_qualify({1, 2}, {1, 2}) == :equal
-  #     assert quoted_qualify({1, 2}, {1, 2, 3}) == :disjoint
-  #   end
-  # end
-
   # defmacro quoted_union(left, right) do
   #   with {:ok, left, _} <- pattern_to_type(left),
   #        {:ok, right, _} <- pattern_to_type(right) do

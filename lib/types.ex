@@ -131,11 +131,11 @@ defmodule Types do
   @doc """
   Unifies the types on left and right.
   """
+  # TODO: Test me (use qualify tests)
   def unify(left, right) do
     unify(left, right, %{}, %{})
   end
 
-  # TODO: Test me (use qualify tests)
   defp unify([{:var, _, counter}], right, lvars, rvars) do
     case unify_var(lvars, counter, right) do
       {:ok, lvars} -> {:ok, lvars, rvars}
@@ -207,14 +207,6 @@ defmodule Types do
 
   @doc """
   Binds the variables to their types.
-
-  There are two mechanisms for binding: `:lazy` and `:eager`.
-
-  `:lazy` is used by the type system itself as we don't want
-  to expand variables that point to other variables.
-
-  `:eager` is used to resolve all variables, including variables
-  that points to variables.
   """
   def bind(types, vars)
 
@@ -276,6 +268,7 @@ defmodule Types do
   @doc """
   Computes the intersection between two union types.
   """
+  # TODO: Test me
   def intersection(lefties, righties) do
     intersection(lefties, righties, [])
   end
@@ -298,6 +291,7 @@ defmodule Types do
     intersection(lefties, righties, acc)
   end
 
+  # TODO: Raise if a variable is seen around here.
   # Merging function used by union and intersection
   defp merge(type, type), do: {:ok, type}
 
@@ -327,60 +321,6 @@ defmodule Types do
   end
 
   @doc """
-  Fetches the type from a pattern.
-  """
-  def pattern_to_type(ast, state \\ @state) do
-    case pattern(ast, %{state | match: %{}}) do
-      {:ok, types, %{vars: vars, match: match} = state} ->
-        ok(types, %{state | vars: Map.merge(vars, match), match: %{}})
-      {:error, _, _} = error ->
-        error
-    end
-  end
-
-  defp pattern({:::, meta, [{var, _, ctx}, type_ast]}, state)
-       when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
-    with {:ok, type, state} <- ast_to_type(type_ast, state) do
-      pattern_bound_var(meta, {var, ctx}, type, state)
-    end
-  end
-
-  defp pattern({var, meta, ctx}, state) when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
-    pattern_var(meta, {var, ctx}, state)
-  end
-
-  defp pattern({:::, meta, [_, _]} = ann, _vars) do
-    error(meta, {:invalid_annotation, ann})
-  end
-
-  defp pattern(other, vars) do
-    literal(other, vars, &pattern/2)
-  end
-
-  defp pattern_var(_meta, var_ctx, %{match: match, counter: counter} = state) do
-    case Map.fetch(match, var_ctx) do
-      {:ok, type} ->
-        ok(type, state)
-      :error ->
-        types = [{:var, var_ctx, counter}]
-        match = Map.put(match, var_ctx, types)
-        ok(types, %{state | match: match, counter: counter + 1})
-    end
-  end
-
-  defp pattern_bound_var(meta, var_ctx, type, %{match: match} = state) do
-    case Map.fetch(match, var_ctx) do
-      {:ok, ^type} ->
-        ok(type, state)
-      {:ok, other} ->
-        error(meta, {:bound_var, var_ctx, other, type})
-      :error ->
-        match = Map.put(match, var_ctx, type)
-        ok(type, %{state | match: match})
-    end
-  end
-
-  @doc """
   Returns the type of the given expression.
   """
   def of(expr) do
@@ -407,7 +347,7 @@ defmodule Types do
 
   defp of({:=, meta, [left, right]}, state) do
     with {:ok, right, right_state} <- of(right, state),
-         {:ok, left, left_state} <- pattern_to_type(left, replace_vars(right_state, state)) do
+         {:ok, left, left_state} <- of_pattern(left, replace_vars(right_state, state)) do
       state = lift_vars(left_state, right_state)
       %{inferred: inferred} = state
 
@@ -450,6 +390,8 @@ defmodule Types do
     literal(value, state, &of/2)
   end
 
+  ## Apply
+
   defp of_apply([{[head], body} | clauses], arg_types, inferred,
                 acc_inferred, acc_body, acc_errors) do
     case of_apply_clause(arg_types, head, inferred, body, acc_inferred, acc_body) do
@@ -466,7 +408,6 @@ defmodule Types do
     {:ok, acc_inferred, acc_body}
   end
 
-  # TODO: Test use of bind and merge
   # TODO: Document the logic behind this function with bind, unify and union
   defp of_apply_clause([type | types], head, inferred, body, acc_inferred, acc_body) do
     with {:ok, lvars, rvars} <- unify(head, [type]),
@@ -477,6 +418,8 @@ defmodule Types do
   defp of_apply_clause([], _head, _inferred, _body, acc_inferred, acc_body) do
     {:ok, acc_inferred, acc_body}
   end
+
+  ## Matching
 
   # All of the possible types returned on the right side
   # must be matched on the left side. We must also unify
@@ -502,29 +445,11 @@ defmodule Types do
          acc_body = union(acc_body, bind([type], acc_inferred)),
          do: of_match(head, types, inferred, acc_inferred, acc_body)
   end
-
   defp of_match(_head, [], _inferred, acc_inferred, acc_body) do
     {:ok, acc_inferred, acc_body}
   end
 
-  defp merge_inferred(inferred, acc_inferred, [{i, types} | kvs]) do
-    case inferred do
-      %{^i => existing} ->
-        case intersection(existing, types) do
-          [] ->
-            {:error, {:intersection, existing, types}}
-          types ->
-            acc_inferred = Map.update(acc_inferred, i, types, &union(&1, types))
-            merge_inferred(inferred, acc_inferred, kvs)
-        end
-      %{} ->
-        acc_inferred = Map.update(acc_inferred, i, types, &union(&1, types))
-        merge_inferred(inferred, acc_inferred, kvs)
-    end
-  end
-  defp merge_inferred(_inferred, acc_inferred, []) do
-    {:ok, acc_inferred}
-  end
+  ## Clauses
 
   # TODO: Support multiple args
   # TODO: Check if clauses have overlapping types
@@ -533,7 +458,7 @@ defmodule Types do
   end
 
   defp of_clauses([{:->, _, [[arg], body]} | clauses], state, acc_clauses, acc_state) do
-    with {:ok, head, acc_state} <- pattern_to_type(arg, acc_state),
+    with {:ok, head, acc_state} <- of_pattern(arg, acc_state),
          {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state),
          do: of_clauses(clauses, state,
                         [{bind_args([head], inferred), bind(body, inferred)} | acc_clauses],
@@ -543,6 +468,8 @@ defmodule Types do
     {:ok, :lists.reverse(acc_clauses), acc_state}
   end
 
+  ## Blocks
+
   defp of_block([arg], state) do
     of(arg, state)
   end
@@ -550,6 +477,56 @@ defmodule Types do
     case of(arg, state) do
       {:ok, _, state} -> of_block(args, state)
       {:error, _, _} = error -> error
+    end
+  end
+
+  ## Patterns
+
+  defp of_pattern(ast, state) do
+    case of_pattern_each(ast, %{state | match: %{}}) do
+      {:ok, types, %{vars: vars, match: match} = state} ->
+        ok(types, %{state | vars: Map.merge(vars, match), match: %{}})
+      {:error, _, _} = error ->
+        error
+    end
+  end
+
+  defp of_pattern_each({:::, meta, [{var, _, ctx}, type_ast]}, state)
+       when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
+    with {:ok, type, state} <- ast_to_type(type_ast, state) do
+      of_pattern_bound_var(meta, {var, ctx}, type, state)
+    end
+  end
+  defp of_pattern_each({var, meta, ctx}, state) when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
+    of_pattern_var(meta, {var, ctx}, state)
+  end
+  defp of_pattern_each({:::, meta, [_, _]} = ann, _vars) do
+    error(meta, {:invalid_annotation, ann})
+  end
+  defp of_pattern_each(other, vars) do
+    literal(other, vars, &of_pattern_each/2)
+  end
+
+  defp of_pattern_var(_meta, var_ctx, %{match: match, counter: counter} = state) do
+    case Map.fetch(match, var_ctx) do
+      {:ok, type} ->
+        ok(type, state)
+      :error ->
+        types = [{:var, var_ctx, counter}]
+        match = Map.put(match, var_ctx, types)
+        ok(types, %{state | match: match, counter: counter + 1})
+    end
+  end
+
+  defp of_pattern_bound_var(meta, var_ctx, type, %{match: match} = state) do
+    case Map.fetch(match, var_ctx) do
+      {:ok, ^type} ->
+        ok(type, state)
+      {:ok, other} ->
+        error(meta, {:bound_var, var_ctx, other, type})
+      :error ->
+        match = Map.put(match, var_ctx, type)
+        ok(type, %{state | match: match})
     end
   end
 
@@ -590,6 +567,32 @@ defmodule Types do
   end
   defp args([], acc_args, acc_count, acc_state, _state, _fun) do
     {:ok, :lists.reverse(acc_args), acc_count, acc_state}
+  end
+
+  # The goal of this function is to merge the inferred counter-types,
+  # given as third argument, into the union of all inferred types,
+  # given by acc_inferred.
+  #
+  # However, before merging the types, we need to calculate the
+  # intersection of the counter-types against the inferred types
+  # so far, and return an error if there is no intersection.
+  defp merge_inferred(inferred, acc_inferred, [{i, types} | kvs]) do
+    case inferred do
+      %{^i => existing} ->
+        case intersection(existing, types) do
+          [] ->
+            {:error, {:intersection, existing, types}}
+          types ->
+            acc_inferred = Map.update(acc_inferred, i, types, &union(&1, types))
+            merge_inferred(inferred, acc_inferred, kvs)
+        end
+      %{} ->
+        acc_inferred = Map.update(acc_inferred, i, types, &union(&1, types))
+        merge_inferred(inferred, acc_inferred, kvs)
+    end
+  end
+  defp merge_inferred(_inferred, acc_inferred, []) do
+    {:ok, acc_inferred}
   end
 
   @compile {:inline, ok: 2, error: 2}
