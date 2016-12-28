@@ -130,7 +130,6 @@ defmodule Types do
   @doc """
   Unifies the types on left and right.
   """
-  # TODO: Test me (use qualify tests)
   def unify(left, right) do
     unify(left, right, %{}, %{})
   end
@@ -261,7 +260,7 @@ defmodule Types do
   def union(left, right), do: Enum.reduce(left, right, &union_left_right/2)
 
   defp union_left_right(left, [right | righties]) do
-    case merge(left, right) do
+    case union_type(left, right) do
       {:ok, type} -> [type | righties]
       :error -> [right | union_left_right(left, righties)]
     end
@@ -270,10 +269,18 @@ defmodule Types do
     [left]
   end
 
+  defp union_type(left, right) do
+    case qualify(left, right) do
+      :disjoint -> :error
+      :superset -> {:ok, left}
+      :subset -> {:ok, right}
+      :equal -> {:ok, left}
+    end
+  end
+
   @doc """
   Computes the intersection between two union types.
   """
-  # TODO: Test me
   def intersection(lefties, righties) do
     intersection(lefties, righties, [])
   end
@@ -282,12 +289,11 @@ defmodule Types do
     intersection(left, righties, lefties, righties, acc)
   end
   defp intersection([], _righties, acc) do
-    acc
+    :lists.reverse(acc)
   end
 
   defp intersection(left, [head | tail], lefties, righties, acc) do
-    # TODO: Intersecting atom and :foo returns what?
-    case merge(left, head) do
+    case intersection_type(left, head) do
       {:ok, type} -> intersection(lefties, righties, [type | acc])
       :error -> intersection(left, tail, lefties, righties, acc)
     end
@@ -296,31 +302,87 @@ defmodule Types do
     intersection(lefties, righties, acc)
   end
 
-  defp merge(type, type), do: {:ok, type}
-
-  defp merge(:atom, {:value, atom}) when is_atom(atom), do: {:ok, :atom}
-  defp merge({:value, atom}, :atom) when is_atom(atom), do: {:ok, :atom}
-
-  defp merge({:tuple, args1, arity}, {:tuple, args2, arity}) do
-    case merge_args(args1, args2, [], false) do
+  defp intersection_type({:tuple, args1, arity}, {:tuple, args2, arity}) do
+    case intersection_args(args1, args2, []) do
       {:ok, args} -> {:ok, {:tuple, args, arity}}
       :error -> :error
     end
   end
-
-  defp merge(_, _), do: :error
-
-  defp merge_args([left | lefties], [right | righties], acc, changed?) do
-    left = Enum.sort(left)
-    right = Enum.sort(right)
-    case left == right do
-      false when changed? -> :error
-      false -> merge_args(lefties, righties, [union(left, right) | acc], true)
-      true -> merge_args(lefties, righties, [left | acc], changed?)
+  defp intersection_type(left, right) do
+    case qualify(left, right) do
+      :disjoint -> :error
+      :superset -> {:ok, right}
+      :subset -> {:ok, left}
+      :equal -> {:ok, left}
     end
   end
-  defp merge_args([], [], acc, _changed?) do
+
+  defp intersection_args([left | lefties], [right | righties], acc) do
+    case intersection(left, right) do
+      [] -> :error
+      intersection -> intersection_args(lefties, righties, [intersection | acc])
+    end
+  end
+  defp intersection_args([], [], acc) do
     {:ok, :lists.reverse(acc)}
+  end
+
+  # Qualifies base types.
+  # Composite types need to be handled on the parent
+  defp qualify(type, type), do: :equal
+
+  defp qualify(:atom, {:value, atom}) when is_atom(atom), do: :superset
+  defp qualify({:value, atom}, :atom) when is_atom(atom), do: :subset
+
+  defp qualify({:tuple, args1, arity}, {:tuple, args2, arity}) do
+    qualify_args(args1, args2, :equal)
+  end
+
+  defp qualify(_, _), do: :disjoint
+
+  defp qualify_args([left | lefties], [right | righties], :equal) do
+    case qualify_left_right(:lists.sort(left), :lists.sort(right)) do
+      :equal -> qualify_args(lefties, righties, :equal)
+      kind -> qualify_args([left | lefties], [right | righties], kind)
+    end
+  end
+  defp qualify_args([left | lefties], [right | righties], :superset) do
+    if qualify_superset?(left, right) do
+      qualify_args(lefties, righties, :superset)
+    else
+      :disjoint
+    end
+  end
+  defp qualify_args([left | lefties], [right | righties], :subset) do
+    if qualify_superset?(right, left) do
+      qualify_args(lefties, righties, :subset)
+    else
+      :disjoint
+    end
+  end
+  defp qualify_args(_, _, :disjoint) do
+    :disjoint
+  end
+  defp qualify_args([], [], kind) do
+    kind
+  end
+
+  defp qualify_left_right([left | lefties], [right | righties]) do
+    case qualify(left, right) do
+      :equal -> qualify_left_right(lefties, righties)
+      kind -> kind
+    end
+  end
+  defp qualify_left_right([], []), do: :equal
+  defp qualify_left_right([], _), do: :subset
+  defp qualify_left_right(_, []), do: :superset
+
+  defp qualify_superset?(lefties, righties) do
+    Enum.all?(righties, fn right ->
+      Enum.any?(lefties, fn left ->
+        qualify(left, right) in [:superset, :equal]
+      end)
+    end)
   end
 
   @doc """

@@ -45,6 +45,126 @@ defmodule TypesTest do
     end
   end
 
+  defmacro quoted_union(left, right) do
+    with {:ok, left, _} <- Types.ast_to_type(left),
+         {:ok, right, _} <- Types.ast_to_type(right) do
+      quote do
+        Types.union(unquote(Macro.escape(left)),
+                    unquote(Macro.escape(right))) |> Enum.sort()
+      end
+    else
+      _ ->
+        quote do
+          assert {:ok, _, _} = Types.ast_to_type(unquote(Macro.escape(left)))
+          assert {:ok, _, _} = Types.ast_to_type(unquote(Macro.escape(right)))
+        end
+    end
+  end
+
+  describe "union/2" do
+    test "base types" do
+      assert quoted_union(integer(), atom()) ==
+             [:atom, :integer]
+
+      assert quoted_union(:foo, atom()) ==
+             [:atom]
+
+      assert quoted_union(atom(), :foo) ==
+             [:atom]
+
+      assert quoted_union(integer(), :foo) ==
+             [:integer, {:value, :foo}]
+    end
+
+    test "tuples" do
+      assert quoted_union({}, {:foo}) ==
+             [{:tuple, [], 0}, {:tuple, [[{:value, :foo}]], 1}]
+
+      assert quoted_union({:ok, atom()}, {:ok, :foo}) ==
+             [{:tuple, [[{:value, :ok}], [:atom]], 2}]
+
+      assert quoted_union({:ok, atom()}, {:ok, atom()}) ==
+             [{:tuple, [[{:value, :ok}], [:atom]], 2}]
+
+      assert quoted_union({boolean(), boolean()}, {boolean(), boolean()}) ==
+             [{:tuple, [[{:value, true}, {:value, false}], [{:value, true}, {:value, false}]], 2}]
+
+      assert quoted_union({:foo, :bar}, {atom(), atom()}) ==
+             [{:tuple, [[:atom], [:atom]], 2}]
+
+      assert quoted_union({:ok, integer()}, {:error, 1}) ==
+             [{:tuple, [[{:value, :error}], [:integer]], 2},
+              {:tuple, [[{:value, :ok}], [:integer]], 2}]
+
+      # TODO: Write using quoted_union once we have |
+      assert Types.union([{:tuple, [[:atom, :integer], [:atom]], 2}],
+                         [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
+             [{:tuple, [[:atom, :integer], [:atom]], 2}]
+
+      assert Types.union([{:tuple, [[:atom, :integer], [:atom]], 2}],
+                         [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
+             [{:tuple, [[:atom, :integer], [:atom]], 2}]
+    end
+  end
+
+  defmacro quoted_intersection(left, right) do
+    with {:ok, left, _} <- Types.ast_to_type(left),
+         {:ok, right, _} <- Types.ast_to_type(right) do
+      quote do
+        Types.intersection(unquote(Macro.escape(left)),
+                           unquote(Macro.escape(right))) |> Enum.sort()
+      end
+    else
+      _ ->
+        quote do
+          assert {:ok, _, _} = Types.ast_to_type(unquote(Macro.escape(left)))
+          assert {:ok, _, _} = Types.ast_to_type(unquote(Macro.escape(right)))
+        end
+    end
+  end
+
+  describe "intersection/2" do
+    test "base types" do
+      assert quoted_intersection(integer(), atom()) ==
+             []
+
+      assert quoted_intersection(:foo, atom()) ==
+             [{:value, :foo}]
+
+      assert quoted_intersection(atom(), :foo) ==
+             [{:value, :foo}]
+    end
+
+    test "tuples" do
+      assert quoted_intersection({}, {:foo}) ==
+             []
+
+      assert quoted_intersection({:ok, atom()}, {:ok, :foo}) ==
+             [{:tuple, [[{:value, :ok}], [{:value, :foo}]], 2}]
+
+      assert quoted_intersection({:ok, atom()}, {:ok, atom()}) ==
+             [{:tuple, [[{:value, :ok}], [:atom]], 2}]
+
+      assert quoted_intersection({boolean(), boolean()}, {boolean(), boolean()}) ==
+             [{:tuple, [[{:value, true}, {:value, false}], [{:value, true}, {:value, false}]], 2}]
+
+      assert quoted_intersection({:foo, :bar}, {atom(), atom()}) ==
+             [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
+
+      assert quoted_intersection({:ok, integer()}, {:error, 1}) ==
+             []
+
+      # TODO: Write using quoted_intersection once we have |
+      assert Types.intersection([{:tuple, [[:atom, :integer], [:atom]], 2}],
+                                [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
+             [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
+
+      assert Types.intersection([{:tuple, [[:atom, :integer], [:atom]], 2}],
+                                [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
+             [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
+    end
+  end
+
   defmacro quoted_of(expr) do
     quote do
       Types.of(unquote(Macro.escape(expr)))
@@ -303,57 +423,4 @@ defmodule TypesTest do
              ], 1}]
     end
   end
-
-  # defmacro quoted_union(left, right) do
-  #   with {:ok, left, _} <- pattern_to_type(left),
-  #        {:ok, right, _} <- pattern_to_type(right) do
-  #     quote do
-  #       union(unquote(Macro.escape(left)), unquote(Macro.escape(right))) |> Enum.sort()
-  #     end
-  #   else
-  #     _ ->
-  #       quote do
-  #         assert {:ok, _, _} = pattern_to_type(unquote(Macro.escape(left)))
-  #         assert {:ok, _, _} = pattern_to_type(unquote(Macro.escape(right)))
-  #       end
-  #   end
-  # end
-
-  # describe "union/2" do
-  #   test "unions base types" do
-  #     assert quoted_union(x :: integer(), x :: atom()) ==
-  #            [:atom, :integer]
-
-  #     assert quoted_union(1, 2) ==
-  #            [{:value, 1}, {:value, 2}]
-
-  #     assert quoted_union(1, x :: integer()) ==
-  #            [:integer]
-
-  #     assert quoted_union(x :: integer(), 1) ==
-  #            [:integer]
-
-  #     assert quoted_union(x :: integer(), :foo) ==
-  #            [:integer, {:value, :foo}]
-  #   end
-
-  #   test "unions tuples" do
-  #     assert quoted_union({}, {1}) ==
-  #            [{:tuple, [], 0}, {:tuple, [[{:value, 1}]], 1}]
-
-  #     assert quoted_union({:ok, x :: integer()}, {:ok, 1}) ==
-  #            [{:tuple, [[{:value, :ok}], [:integer]], 2}]
-
-  #     assert quoted_union({:ok, x :: integer()}, {:ok, x :: integer()}) ==
-  #            [{:tuple, [[{:value, :ok}], [:integer]], 2}]
-
-  #     assert quoted_union({:ok, x :: integer(), y :: atom()}, {:ok, 1, z :: atom()}) ==
-  #            [{:tuple, [[{:value, :ok}], [:integer], [:atom]], 3}]
-
-  #     assert quoted_union({:ok, x :: integer()}, {:error, 1}) ==
-  #            [{:tuple, [[{:value, :error}], [{:value, 1}]], 2},
-  #             {:tuple, [[{:value, :ok}], [:integer]], 2}]
-  #   end
-  # end
-
 end
