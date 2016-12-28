@@ -57,9 +57,8 @@ defmodule Types do
   # 3. the cost of having duplicate syntax
 
   ## Function annotations
-  # 1. A variable on the right side must appear on all unions on the left side.
-  # 2. Annotations may have multiple clauses. Each clause must have at least one matching implementation.
-  # 3. Mixing variables with non-variables. Currently we don't allow unions with non variables.
+  # 1. Annotations may have multiple clauses. Each clause must have at least one matching implementation.
+  # 2. Should we force a explicit type on fn true -> true; _ -> x end? If so, what to do on catch all?
 
   ## Guards
   # Must perform exhaustion check based on patterns
@@ -134,6 +133,12 @@ defmodule Types do
   # TODO: Test me (use qualify tests)
   def unify(left, right) do
     unify(left, right, %{}, %{})
+  end
+
+  defp unify([{:var, _, c1}], [{:var, _, c2}] = right, lvars, rvars) do
+    with {:ok, lvars} <- unify_var(lvars, c1, right),
+         {:ok, rvars} <- unify_var(rvars, c2, right),
+         do: {:ok, lvars, rvars}
   end
 
   defp unify([{:var, _, counter}], right, lvars, rvars) do
@@ -214,27 +219,27 @@ defmodule Types do
     types
   end
   def bind(types, vars) do
-    bind_each(types, vars)
+    bind_each(types, [], vars)
   end
 
-  defp bind_each([{:fn, clauses, arity} | types], vars) do
+  defp bind_each([{:fn, clauses, arity} | types], acc, vars) do
     clauses =
       for {head, body} <- clauses do
         {bind_args(head, vars), bind(body, vars)}
       end
-    [{:fn, clauses, arity} | bind_each(types, vars)]
+    bind_each(types, [{:fn, clauses, arity} | acc], vars)
   end
-  defp bind_each([{:var, _, counter} = type | types], vars) do
-    bind_lookup(vars, counter, [type]) ++ bind_each(types, vars)
+  defp bind_each([{:var, _, counter} = type | types], acc, vars) do
+    bind_each(types, union(acc, bind_lookup(vars, counter, [type])), vars)
   end
-  defp bind_each([{:tuple, args, arity} | types], vars) do
-    [{:tuple, bind_args(args, vars), arity} | bind_each(types, vars)]
+  defp bind_each([{:tuple, args, arity} | types], acc, vars) do
+    bind_each(types, [{:tuple, bind_args(args, vars), arity} | acc], vars)
   end
-  defp bind_each([type | types], vars) do
-    [type | bind_each(types, vars)]
+  defp bind_each([type | types], acc, vars) do
+    bind_each(types, [type | acc], vars)
   end
-  defp bind_each([], _vars) do
-    []
+  defp bind_each([], acc, _vars) do
+    acc
   end
 
   defp bind_args(args, vars) do
@@ -243,7 +248,7 @@ defmodule Types do
 
   defp bind_lookup(vars, counter, default) do
     case vars do
-      %{^counter => existing} -> bind_each(existing, vars)
+      %{^counter => existing} -> bind_each(existing, [], vars)
       %{} -> default
     end
   end
@@ -291,8 +296,6 @@ defmodule Types do
     intersection(lefties, righties, acc)
   end
 
-  # TODO: Raise if a variable is seen around here.
-  # Merging function used by union and intersection
   defp merge(type, type), do: {:ok, type}
 
   defp merge(:atom, {:value, atom}) when is_atom(atom), do: {:ok, :atom}
@@ -440,8 +443,8 @@ defmodule Types do
   # And the function must return {:ok, :error}.
   defp of_match(head, [type | types], inferred, acc_inferred, acc_body) do
     with {:ok, lvars, rvars} <- unify(head, [type]),
-         {:ok, acc_inferred} <- merge_inferred(inferred, acc_inferred, Map.to_list(rvars)),
          {:ok, acc_inferred} <- merge_inferred(inferred, acc_inferred, Map.to_list(lvars)),
+         {:ok, acc_inferred} <- merge_inferred(inferred, acc_inferred, Map.to_list(rvars)),
          acc_body = union(acc_body, bind([type], acc_inferred)),
          do: of_match(head, types, inferred, acc_inferred, acc_body)
   end
@@ -576,6 +579,13 @@ defmodule Types do
   # However, before merging the types, we need to calculate the
   # intersection of the counter-types against the inferred types
   # so far, and return an error if there is no intersection.
+  #
+  # Note that, if a variable is inferred to be itself, then it
+  # is inferred to nothing at all (we got a catch all).
+  defp merge_inferred(inferred, acc_inferred, [{i, [{:var, _, i}]} | kvs]) do
+    merge_inferred(inferred, Map.delete(acc_inferred, i), kvs)
+  end
+
   defp merge_inferred(inferred, acc_inferred, [{i, types} | kvs]) do
     case inferred do
       %{^i => existing} ->

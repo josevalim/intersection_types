@@ -73,9 +73,6 @@ defmodule TypesTest do
     end
 
     test "apply with inference" do
-      assert quoted_of((fn x -> x end).(true)) |> types() ==
-             [{:value, true}]
-
       assert quoted_of(fn x ->
         (fn true -> true end).(x)
         (fn z ->
@@ -115,6 +112,84 @@ defmodule TypesTest do
             z
           end).(x)
         end)
+    end
+
+    test "apply with inference and free variables" do
+      assert quoted_of(fn x ->
+        (fn y -> y end).(x)
+      end) |> types() ==
+        [{:fn, [
+          {[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}]}
+        ], 1}]
+
+      assert quoted_of(fn x ->
+        (fn false -> false; nil -> nil; _ -> true end).(x)
+      end) |> types() ==
+        [{:fn, [
+          {[[{:var, {:x, nil}, 0}]], [{:value, true}, {:value, nil}, {:value, false}]}
+        ], 1}]
+
+      assert quoted_of(fn x ->
+        a = (fn false -> false; nil -> nil; _ -> true end).(x)
+        b = (fn y -> y end).(x)
+        c = x
+        {a, b, c}
+      end) |> types() ==
+        [{:fn, [
+          {[[{:var, {:x, nil}, 0}]],
+           [{:tuple, [[value: false, value: nil, value: true], [{:var, {:x, nil}, 0}], [{:var, {:x, nil}, 0}]], 3}]}
+        ], 1}]
+
+      assert quoted_of(fn x ->
+        a = (fn true -> false; y -> y end).(x)
+        b = (fn z -> z end).(x)
+        c = x
+        {a, b, c}
+      end) |> types() ==
+        [{:fn, [
+          {[[{:var, {:x, nil}, 0}]],
+           [{:tuple, [[{:value, false}, {:var, {:x, nil}, 0}], [{:var, {:x, nil}, 0}], [{:var, {:x, nil}, 0}]], 3}]}
+        ], 1}]
+
+      assert quoted_of(fn x ->
+        a = (fn true -> false; y -> y end).(x)
+        b = (fn false -> false end).(x)
+        c = x
+        {a, b, c}
+      end) |> types() ==
+        [{:fn, [
+          {[[{:value, false}]],
+           [{:tuple, [[{:value, false}], [{:value, false}], [{:value, false}]], 3}]}
+        ], 1}]
+    end
+
+    test "apply with closure" do
+      assert quoted_of((fn x -> (fn y -> x end) end).(true)) |> types() ==
+             [{:fn, [{[[{:var, {:y, nil}, 1}]], [value: true]}], 1}]
+
+      assert quoted_of((fn x -> (fn y -> x end) end).(true).(:foo)) |> types() ==
+             [{:value, true}]
+    end
+
+    # TODO: Make below work with rank-2 intersection types
+    test "apply on variable" do
+      assert {:error, _, {:invalid_fn, _, _}} =
+        quoted_of((
+          x = fn y -> y end
+          x.(:foo)
+        ))
+
+      assert {:error, _, {:invalid_fn, _, _}} =
+        quoted_of((
+          x = fn y -> y end
+          {x.(:foo), x.(:foo)}
+        ))
+
+      assert {:error, _, {:invalid_fn, _, _}} =
+        quoted_of((
+          x = fn y -> y end
+          {x.(:foo), x.(:bar)}
+        ))
     end
 
     test "match" do
@@ -181,6 +256,13 @@ defmodule TypesTest do
       assert quoted_of(fn z ->
         {:ok, x} = (fn y -> {y, :error} end).(z)
         {z, x}
+      end) |> types() ==
+        [{:fn, [
+          {[[value: :ok]], [{:tuple, [[value: :ok], [value: :error]], 2}]}
+        ], 1}]
+
+      assert quoted_of(fn z ->
+        {:ok, x} = (fn y -> {y, :error} end).(z)
       end) |> types() ==
         [{:fn, [
           {[[value: :ok]], [{:tuple, [[value: :ok], [value: :error]], 2}]}
