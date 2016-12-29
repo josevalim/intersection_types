@@ -130,7 +130,38 @@ defmodule Types do
   @doc """
   Unifies the types on left and right.
 
-  All of the types on the right must match at least one type on the left.
+  All of the types on the right must match at least one type
+  on the left. Internally we keep track of the following variables:
+
+    * lvars - variables already inferred for the left side.
+      It always starts as an empty map.
+    * rvars - variables already inferred for the right side.
+    * type_lvars - variables inferred for the left side for
+      each type on the right. Starts as lvars.
+    * type_lvars - variables inferred for the right side for
+      each type on the right. Starts as rvars.
+    * acc_rvars - variables inferred for the right side from
+      the caller loop.
+
+  Any variable found during unification must intersect with
+  whatever variable found on the proper `?vars`. For example,
+  if a variable is found on the right side, it must intersect
+  with any inferred value in `rvars`.
+
+  Unification works by pinning each specific type on the `right`
+  and finding a `left` type that matches. If such type exists
+  and variables are involved, `type_?vars` will be properly
+  updated and be set as the main `?vars` once we move to the
+  next type.
+
+  `acc_rvars` is only updated by this function, never read.
+  `acc_rvars` keeps inference information across the caller
+  loop. For example, if we are unifying against multiple clauses,
+  `acc_rvars` will keep unifying information for all clauses.
+
+  Notice there is no such thing as `acc_lvars` since it always
+  means an inner scope (that's not true for matches but in such
+  cases they are explicitly merged into `acc_rvars` afterwards).
   """
   def unify(left, right, rvars, acc_rvars) do
     unify(left, right, %{}, rvars, %{}, rvars, acc_rvars, [])

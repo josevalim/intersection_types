@@ -165,6 +165,30 @@ defmodule TypesTest do
     end
   end
 
+  describe "unify/4" do
+    test "either" do
+      # This pattern requires different types across left and right.
+      pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
+                 {:tuple, [[{:value, :right}], [{:var, {:y, nil}, 1}]], 2}]
+
+      left  = {:tuple, [[{:value, :left}], [:atom]], 2}
+      right = {:tuple, [[{:value, :right}], [:integer]], 2}
+
+      assert Types.unify(pattern, [left, right], %{}, %{}) ==
+             {%{0 => [:atom], 1 => [:integer]}, %{}, %{}, [right, left], []}
+
+      assert Types.unify(pattern, [left, right, :atom], %{}, %{}) ==
+             {%{0 => [:atom], 1 => [:integer]}, %{}, %{}, [right, left], [:atom]}
+
+      # This pattern requires the same type across left and right.
+      pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
+                 {:tuple, [[{:value, :right}], [{:var, {:x, nil}, 0}]], 2}]
+
+      assert Types.unify(pattern, [left, right], %{}, %{}) ==
+             {%{0 => [:atom]}, %{}, %{}, [left], [right]}
+    end
+  end
+
   defmacro quoted_of(expr) do
     quote do
       Types.of(unquote(Macro.escape(expr)))
@@ -367,7 +391,7 @@ defmodule TypesTest do
     test "late propagation" do
       assert quoted_of(fn x ->
         z = x
-        (fn 0 -> 0 end).(x) # TODO: This should emit a warning in the future.
+        (fn 0 -> 0 end).(x) # TODO: This should emit a warning for being non-exaustive.
         z
       end) |> types() == [{:fn, [{[[:integer]], [:integer]}], 1}]
     end
