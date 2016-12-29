@@ -105,7 +105,7 @@ defmodule Types do
   # {:fn, [clauses], arity}
   # {:defn, [clauses], arity}
   # {:tuple, args, arity}
-  # {:var, var_ctx, counter}
+  # {:var, var_ctx, var_key}
   # :integer
   # :atom
 
@@ -194,30 +194,35 @@ defmodule Types do
           type_lvars, type_rvars, acc_rvars, matched)
   end
 
-  defp unify_each({:var, _, c1}, {:var, _, c2} = right,
+  defp unify_each({:var, _, key1}, {:var, _, key2} = right,
                   lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
-    with {:ok, types} <- unify_var(lvars, c1, [right]) do
-      {Map.update(type_lvars, c1, types, &union(&1, types)),
-       Map.delete(type_rvars, c2),
-       Map.delete(acc_rvars, c2)}
-    end
-  end
-
-  defp unify_each({:var, _, counter}, right,
-                  lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
-    with {:ok, types} <- unify_var(lvars, counter, [right]) do
-      {Map.update(type_lvars, counter, types, &union(&1, types)),
+    with {:ok, types} <- unify_var(lvars, key1, [right]) do
+      acc_rvars =
+        case type_rvars do
+          %{^key2 => previous_types} -> Map.put(acc_rvars, key2, previous_types)
+          %{} -> Map.delete(acc_rvars, key2)
+        end
+      {Map.update(type_lvars, key1, types, &union(&1, types)),
        type_rvars,
        acc_rvars}
     end
   end
 
-  defp unify_each(left, {:var, _, counter},
+  defp unify_each({:var, _, key}, right,
+                  lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
+    with {:ok, types} <- unify_var(lvars, key, [right]) do
+      {Map.update(type_lvars, key, types, &union(&1, types)),
+       type_rvars,
+       acc_rvars}
+    end
+  end
+
+  defp unify_each(left, {:var, _, key},
                   _lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    with {:ok, types} <- unify_var(rvars, counter, [left]) do
+    with {:ok, types} <- unify_var(rvars, key, [left]) do
       {type_lvars,
-       Map.update(type_rvars, counter, types, &union(&1, types)),
-       Map.update(acc_rvars, counter, types, &union(&1, types))}
+       Map.update(type_rvars, key, types, &union(&1, types)),
+       Map.update(acc_rvars, key, types, &union(&1, types))}
     end
   end
 
@@ -227,6 +232,11 @@ defmodule Types do
   defp unify_each(:atom, {:value, atom},
                   _lvars, _rvars, type_lvars, type_rvars, acc_rvars) when is_atom(atom),
     do: {type_lvars, type_rvars, acc_rvars}
+
+  defp unify_each({:fn, lefties, arity}, {:fn, righties, arity},
+                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    unify_fn(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars)
+  end
 
   defp unify_each({:tuple, lefties, arity}, {:tuple, righties, arity},
                   lvars, rvars, type_lvars, type_rvars, acc_rvars) do
@@ -261,6 +271,31 @@ defmodule Types do
     {type_lvars, type_rvars, acc_rvars}
   end
 
+  defp unify_fn([{left_head, left_body} | lefties], righties,
+                lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    unify_fn(left_head, left_body, righties, lefties, righties,
+             lvars, rvars, type_lvars, type_rvars, acc_rvars)
+  end
+  defp unify_fn([], _righties, _lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
+    {type_lvars, type_rvars, acc_rvars}
+  end
+
+  defp unify_fn(left_head, left_body, [{right_head, right_body} | clauses], lefties, righties,
+                lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    with {type_lvars, type_rvars, acc_rvars} <-
+           unify_args(left_head, right_head, lvars, rvars, type_lvars, type_rvars, acc_rvars),
+         {type_lvars, type_rvars, acc_rvars, _, []} <-
+           unify(left_body, right_body, lvars, rvars, type_lvars, type_rvars, acc_rvars, []) do
+      unify_fn(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars)
+    else
+      _ -> unify_fn(left_head, left_body, clauses, lefties, righties,
+                    lvars, rvars, type_lvars, type_rvars, acc_rvars)
+    end
+  end
+  defp unify_fn(_, _, [], _lefties, _righties, _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
+    :error
+  end
+
   @doc """
   Binds the variables to their types.
   """
@@ -270,7 +305,7 @@ defmodule Types do
     types
   end
   def bind(types, vars) do
-    bind_each(types, [], vars)
+    :lists.reverse(bind_each(types, [], vars))
   end
 
   defp bind_each([{:fn, clauses, arity} | types], acc, vars) do
@@ -280,9 +315,9 @@ defmodule Types do
       end
     bind_each(types, [{:fn, clauses, arity} | acc], vars)
   end
-  defp bind_each([{:var, _, counter} = type | types], acc, vars) do
+  defp bind_each([{:var, _, key} = type | types], acc, vars) do
     case vars do
-      %{^counter => existing} ->
+      %{^key => existing} ->
         bind_each(types, union(bind_each(existing, [], vars), acc), vars)
       %{} ->
         bind_each(types, [type | acc], vars)
@@ -305,27 +340,26 @@ defmodule Types do
   @doc """
   Computes the union of two union types.
   """
-  def union(left, []), do: left
-  def union([], right), do: right
-  def union(left, right), do: Enum.reduce(left, right, &union_left_right/2)
+  def union(lefties, []), do: lefties
+  def union([], righties), do: righties
+  def union(lefties, righties), do: union(lefties, righties, [])
 
-  defp union_left_right(left, [right | righties]) do
-    case union_type(left, right) do
-      {:ok, type} -> [type | righties]
-      :error -> [right | union_left_right(left, righties)]
-    end
+  defp union([left | lefties], righties, acc) do
+    union(left, righties, lefties, [], acc)
   end
-  defp union_left_right(left, []) do
-    [left]
+  defp union([], righties, acc) do
+    :lists.reverse(acc, righties)
   end
 
-  defp union_type(left, right) do
+  defp union(left, [right | righties], temp_left, temp_right, acc) do
     case qualify(left, right) do
-      :disjoint -> :error
-      :superset -> {:ok, left}
-      :subset -> {:ok, right}
-      :equal -> {:ok, left}
+      :disjoint -> union(left, righties, temp_left, [right | temp_right], acc)
+      :subset -> union(temp_left, :lists.reverse(temp_right, [right | righties]), acc)
+      _ -> union(temp_left, :lists.reverse(temp_right, righties), [left | acc])
     end
+  end
+  defp union(left, [], temp_left, temp_right, acc) do
+    union(temp_left, :lists.reverse(temp_right), [left | acc])
   end
 
   @doc """
@@ -464,11 +498,11 @@ defmodule Types do
     with {:ok, right, right_state} <- of(right, state),
          {:ok, left, left_state} <- of_pattern(left, replace_vars(right_state, state)) do
       state = lift_vars(left_state, right_state)
-      %{inferred: inferred} = state
+      %{inferred: inferred, vars: vars, match: match} = state
 
-      case of_match(left, right, inferred) do
-        {:ok, acc_inferred, acc_body} ->
-          ok(acc_body, %{state | inferred: Map.merge(inferred, acc_inferred)})
+      case of_match(left, right, inferred, vars, match) do
+        {:ok, acc_vars, acc_inferred, acc_body} ->
+          ok(acc_body, %{state | inferred: acc_inferred, vars: acc_vars})
         :error ->
           error(meta, {:disjoint_match, left, right})
       end
@@ -477,23 +511,40 @@ defmodule Types do
 
   # TODO: Support multiple args
   # TODO: Support call merging
-  defp of({{:., _, [fun]}, meta, args}, state) do
-    with {:ok, fun_type, fun_state} <- of(fun, state) do
+  defp of({{:., _, [fun]}, meta, [arg] = args}, state) do
+    with {:ok, fun_type, fun_state} <- of(fun, state),
+         {:ok, arg_types, arg_state} <- of(arg, replace_vars(fun_state, state)) do
       arity = length(args)
+      state = lift_vars(arg_state, fun_state)
 
+      # TODO: Generalize matching to support multiple functions
       case fun_type do
         [{:fn, clauses, ^arity}] ->
-          [arg] = args
-          with {:ok, arg_types, arg_state} <- of(arg, replace_vars(fun_state, state)) do
-            state = lift_vars(arg_state, fun_state)
-            %{inferred: inferred} = state
+          %{inferred: inferred} = state
 
-            case of_apply(clauses, arg_types, inferred, arg_types, inferred, []) do
-              {:ok, acc_inferred, acc_body} ->
-                ok(acc_body, %{state | inferred: acc_inferred})
-              {:error, pending} ->
-                error(meta, {:disjoint_apply, pending, clauses, arg_types})
-            end
+          case of_apply(clauses, arg_types, inferred, arg_types, inferred, []) do
+            {:ok, acc_inferred, acc_body} ->
+              ok(acc_body, %{state | inferred: acc_inferred})
+            {:error, pending} ->
+              error(meta, {:disjoint_apply, pending, clauses, arg_types})
+          end
+        [{:var, _, var_key}] ->
+          %{counter: counter, inferred: inferred} = state
+
+          case of_var_apply(var_key, arg_types, arity, inferred) do
+            {:match, types, return} ->
+              inferred = Map.put(inferred, var_key, types)
+              ok(return, %{state | inferred: inferred})
+            {:nomatch, types} ->
+              return = [{:var, {:var, Elixir}, counter}]
+              types =
+                for {:fn, clauses, arity} <- types do
+                  {:fn, [{[arg_types], return} | clauses], arity}
+                end
+              inferred = Map.put(inferred, var_key, types)
+              ok(return, %{state | inferred: inferred, counter: counter + 1})
+            :error ->
+              error(meta, {:invalid_fn, fun_type, arity})
           end
         _ ->
           error(meta, {:invalid_fn, fun_type, arity})
@@ -506,6 +557,34 @@ defmodule Types do
   end
 
   ## Apply
+
+  defp of_var_apply(key, arg, arity, inferred) do
+    case inferred do
+      %{^key => existing} ->
+        case for({:fn, _clauses, ^arity} = type <- existing, do: type) do
+          [] ->
+            :error
+          types ->
+            # TODO: Use of_apply
+            return =
+              for {:fn, clauses, _arity} <- types,
+                  {[head], body} <- clauses,
+                  body <- of_var_apply_body(head, body, arg, inferred),
+                  do: body
+            if return == [], do: {:nomatch, types}, else: {:match, types, return}
+        end
+      %{} ->
+        {:nomatch, [{:fn, [], arity}]}
+    end
+  end
+
+  # TODO: Use of_apply
+  defp of_var_apply_body(head, body, arg, inferred) do
+    case unify(head, arg, inferred, inferred) do
+      {lvars, _, _, _, []} -> bind(body, lvars)
+      {_, _, _, _, _} -> []
+    end
+  end
 
   defp of_apply([{[head], body} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
     with {lvars, _, rvars, [_ | _] = matched, _} <- unify(head, arg, inferred, acc_inferred) do
@@ -541,14 +620,13 @@ defmodule Types do
   #     z is :ok
   #
   # And the function must return {:ok, :error}.
-
-  defp of_match(left, right, inferred) do
+  defp of_match(left, right, inferred, vars, match) do
     with {lvars, _, rvars, _, []} <- unify(left, right, inferred, inferred) do
-      inferred =
-        Enum.reduce(lvars, rvars, fn {k, v}, acc ->
-          Map.update(acc, k, v, &union(&1, v))
+      lvars =
+        Enum.reduce(match, vars, fn {var_ctx, types}, acc ->
+          Map.put(acc, var_ctx, bind(types, lvars))
         end)
-      {:ok, inferred, bind(right, inferred)}
+      {:ok, lvars, rvars, bind(right, inferred)}
     else
       _ -> :error
     end
@@ -563,7 +641,8 @@ defmodule Types do
   end
 
   defp of_clauses([{:->, _, [[arg], body]} | clauses], state, acc_clauses, acc_state) do
-    with {:ok, head, acc_state} <- of_pattern(arg, acc_state),
+    with {:ok, head, %{match: match, vars: vars} = acc_state} <- of_pattern(arg, acc_state),
+         acc_state = %{acc_state | vars: Map.merge(match, vars)},
          {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state),
          do: of_clauses(clauses, state,
                         [{bind_args([head], inferred), bind(body, inferred)} | acc_clauses],
@@ -588,12 +667,7 @@ defmodule Types do
   ## Patterns
 
   defp of_pattern(ast, state) do
-    case of_pattern_each(ast, %{state | match: %{}}) do
-      {:ok, types, %{vars: vars, match: match} = state} ->
-        ok(types, %{state | vars: Map.merge(vars, match), match: %{}})
-      {:error, _, _} = error ->
-        error
-    end
+    of_pattern_each(ast, %{state | match: %{}})
   end
 
   defp of_pattern_each({:::, meta, [{var, _, ctx}, type_ast]}, state)

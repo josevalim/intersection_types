@@ -163,6 +163,10 @@ defmodule TypesTest do
                                 [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
              [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
     end
+
+    test "fns" do
+
+    end
   end
 
   describe "unify/4" do
@@ -258,7 +262,7 @@ defmodule TypesTest do
         end)
     end
 
-    test "apply with inference and free variables" do
+    test "apply with inference on multiple clauses" do
       assert quoted_of(fn x ->
         (fn y -> y end).(x)
       end) |> types() ==
@@ -270,7 +274,7 @@ defmodule TypesTest do
         (fn false -> false; nil -> nil; _ -> true end).(x)
       end) |> types() ==
         [{:fn, [
-          {[[{:var, {:x, nil}, 0}]], [{:value, true}, {:value, nil}, {:value, false}]}
+          {[[{:var, {:x, nil}, 0}]], [{:value, false}, {:value, nil}, {:value, true}]}
         ], 1}]
 
       assert quoted_of(fn x ->
@@ -315,25 +319,51 @@ defmodule TypesTest do
              [{:value, true}]
     end
 
-    # TODO: Make below work with rank-2 intersection types
+    # This test is about let polymorphism.
+    #
+    # Although rank 2 intersection types do not require let polymorphism,
+    # we implement them to avoid having to rearrange ASTs into let formats.
+    # Papers such as "Let should not be generalized" argue against this
+    # in terms of simplicity on type systems that have constraints (we
+    # haven't reached such trade-offs yet).
     test "apply on variable" do
-      assert {:error, _, {:invalid_fn, _, _}} =
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
         quoted_of((
-          x = fn y -> y end
+          x = fn :bar -> :bar end
           x.(:foo)
         ))
 
-      assert {:error, _, {:invalid_fn, _, _}} =
-        quoted_of((
+      assert quoted_of((
+          x = fn y -> y end
+          x.(:foo)
+        )) |> types() ==
+        [{:value, :foo}]
+
+      assert quoted_of((
           x = fn y -> y end
           {x.(:foo), x.(:foo)}
-        ))
+        )) |> types() ==
+        [{:tuple, [[value: :foo], [value: :foo]], 2}]
 
-      assert {:error, _, {:invalid_fn, _, _}} =
-        quoted_of((
+      assert quoted_of((
           x = fn y -> y end
           {x.(:foo), x.(:bar)}
-        ))
+        )) |> types() ==
+        [{:tuple, [[value: :foo], [value: :bar]], 2}]
+    end
+
+    test "apply with function arguments" do
+      assert quoted_of((fn x ->
+          x.(:foo)
+        end).(fn y -> y end)) |> types() ==
+        [{:value, :foo}]
+
+      assert quoted_of((fn x ->
+          {x.(:foo), x.(:bar)}
+        end).(fn y -> y end)) |> types() ==
+        [{:tuple, [[value: :foo], [value: :bar]], 2}]
+
+      # TODO: Also test when the given function has explicit clauses.
     end
 
     test "match" do
@@ -419,7 +449,7 @@ defmodule TypesTest do
         {y, x}
       end) |> types() ==
         [{:fn, [
-          {[[value: false, value: true]],
+          {[[value: true, value: false]],
            [{:tuple, [[value: :foo, value: :bar], [value: true, value: false]], 2}
         ]}], 1}]
     end
