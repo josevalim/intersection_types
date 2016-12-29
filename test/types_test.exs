@@ -186,7 +186,7 @@ defmodule TypesTest do
       assert quoted_of((fn false -> true; true -> false end).(true)) |> types() ==
              [{:value, false}]
 
-      assert {:error, _, {:disjoint_apply, _}} =
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of(fn x :: boolean() ->
                (fn true -> true end).(x)
              end)
@@ -215,7 +215,7 @@ defmodule TypesTest do
           {[[value: true]], [value: true]}
         ], 1}]
 
-      assert {:error, _, {:disjoint_match, _}} =
+      assert {:error, _, {:disjoint_match, _, _}} =
         quoted_of(fn x ->
           false = (fn y :: boolean() -> y end).(x)
           (fn z ->
@@ -224,7 +224,7 @@ defmodule TypesTest do
           end).(x)
         end)
 
-      assert {:error, _, {:disjoint_apply, _}} =
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
         quoted_of(fn x ->
           (fn y :: integer() -> y end).(x)
           (fn z ->
@@ -313,7 +313,7 @@ defmodule TypesTest do
     end
 
     test "match" do
-      assert {:error, _, {:disjoint_match, _}} =
+      assert {:error, _, {:disjoint_match, _, _}} =
                quoted_of({:ok, a :: atom()} = {:ok, 0})
     end
 
