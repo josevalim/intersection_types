@@ -190,6 +190,10 @@ defmodule TypesTest do
 
       assert Types.unify(pattern, [left, right], %{}, %{}) ==
              {%{0 => [:atom]}, %{}, %{}, [left], [right]}
+
+      # The opposite should also fail.
+      assert Types.unify([left, right], pattern, %{}, %{}) ==
+             {%{}, %{0 => [:atom]}, %{0 => [:atom]}, [hd(pattern)], [hd(tl(pattern))]}
     end
   end
 
@@ -361,9 +365,12 @@ defmodule TypesTest do
       assert quoted_of((fn x ->
           {x.(:foo), x.(:bar)}
         end).(fn y -> y end)) |> types() ==
-        [{:tuple, [[value: :foo], [value: :bar]], 2}]
+        [{:tuple, [[{:value, :bar}, {:value, :foo}], [{:value, :bar}, {:value, :foo}]], 2}]
 
-      # TODO: Also test when the given function has explicit clauses.
+      assert quoted_of((fn x ->
+          {x.(:foo), x.(:bar)}
+        end).(fn :foo -> :x; :bar -> :y end)) |> types() ==
+        [{:tuple, [[{:value, :x}], [{:value, :y}]], 2}]
     end
 
     test "match" do

@@ -199,7 +199,7 @@ defmodule Types do
     with {:ok, types} <- unify_var(lvars, key1, [right]) do
       acc_rvars =
         case type_rvars do
-          %{^key2 => previous_types} -> Map.put(acc_rvars, key2, previous_types)
+          %{^key2 => rtypes} -> Map.put(acc_rvars, key2, rtypes)
           %{} -> Map.delete(acc_rvars, key2)
         end
       {Map.update(type_lvars, key1, types, &union(&1, types)),
