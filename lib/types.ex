@@ -282,16 +282,8 @@ defmodule Types do
            unify_args(left_head, right_head, lvars, rvars, type_lvars, type_rvars, acc_rvars),
          {temp_lvars, temp_rvars, temp_acc, _, []} <-
            unify(left_body, bind(right_body, temp_rvars, type_rvars), temp_lvars, temp_rvars, temp_lvars, temp_rvars, temp_acc, []) do
-      type_rvars =
-        Enum.reduce(type_rvars, type_rvars, fn {i, _}, acc ->
-          Map.put(acc, i, Map.fetch!(temp_rvars, i))
-        end)
-
-      acc_rvars =
-        Enum.reduce(acc_rvars, acc_rvars, fn {i, _}, acc ->
-          Map.put(acc, i, Map.fetch!(temp_acc, i))
-        end)
-
+      type_rvars = preserve_inferred(type_rvars, temp_rvars)
+      acc_rvars = preserve_inferred(acc_rvars, temp_acc)
       unify_fn(lefties, righties, lvars, rvars, temp_lvars, type_rvars, acc_rvars)
     else
       _ -> unify_fn(left_head, left_body, clauses, lefties, righties,
@@ -666,10 +658,13 @@ defmodule Types do
   defp of_clauses([{:->, _, [[arg], body]} | clauses], %{inferred: preserve} = state, acc_clauses, acc_state) do
     with {:ok, head, %{match: match, vars: vars} = acc_state} <- of_pattern(arg, acc_state),
          acc_state = %{acc_state | vars: Map.merge(match, vars)},
-         {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state),
-         do: of_clauses(clauses, state,
-                        [{bind_args([head], inferred, preserve), bind(body, inferred, preserve)} | acc_clauses],
-                        replace_vars(acc_state, state))
+         {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state) do
+      head = bind_args([head], inferred, preserve)
+      body = bind(body, inferred, preserve)
+      preserve = preserve_inferred(preserve, inferred)
+      acc_state = replace_vars(%{acc_state | inferred: preserve}, state)
+      of_clauses(clauses, state, [{head, body} | acc_clauses], acc_state)
+    end
   end
   defp of_clauses([], _state, acc_clauses, acc_state) do
     {:ok, :lists.reverse(acc_clauses), acc_state}
@@ -770,6 +765,13 @@ defmodule Types do
   end
   defp args([], acc_args, acc_count, acc_state, _state, _fun) do
     {:ok, :lists.reverse(acc_args), acc_count, acc_state}
+  end
+
+  # Keep only the variables we already knew about.
+  defp preserve_inferred(preserve, latest) do
+    Enum.reduce(preserve, preserve, fn {i, _}, acc ->
+      Map.put(acc, i, Map.fetch!(latest, i))
+    end)
   end
 
   @compile {:inline, ok: 2, error: 2}
