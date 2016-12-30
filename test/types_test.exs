@@ -112,7 +112,7 @@ defmodule TypesTest do
          {:ok, right, _} <- Types.ast_to_type(right) do
       quote do
         Types.intersection(unquote(Macro.escape(left)),
-                           unquote(Macro.escape(right))) |> Enum.sort()
+                           unquote(Macro.escape(right)))
       end
     else
       _ ->
@@ -126,46 +126,42 @@ defmodule TypesTest do
   describe "intersection/2" do
     test "base types" do
       assert quoted_intersection(integer(), atom()) ==
-             []
+             {[], [], [:integer]}
 
       assert quoted_intersection(:foo, atom()) ==
-             [{:value, :foo}]
+             {[{:value, :foo}], [], []}
 
       assert quoted_intersection(atom(), :foo) ==
-             [{:value, :foo}]
+             {[{:value, :foo}], [{:value, :foo}], [:atom]}
     end
 
     test "tuples" do
-      assert quoted_intersection({}, {:foo}) ==
+      assert quoted_intersection({}, {:foo}) |> elem(0) ==
              []
 
-      assert quoted_intersection({:ok, atom()}, {:ok, :foo}) ==
+      assert quoted_intersection({:ok, atom()}, {:ok, :foo}) |> elem(0) ==
              [{:tuple, [[{:value, :ok}], [{:value, :foo}]], 2}]
 
-      assert quoted_intersection({:ok, atom()}, {:ok, atom()}) ==
+      assert quoted_intersection({:ok, atom()}, {:ok, atom()}) |> elem(0) ==
              [{:tuple, [[{:value, :ok}], [:atom]], 2}]
 
-      assert quoted_intersection({boolean(), boolean()}, {boolean(), boolean()}) ==
+      assert quoted_intersection({boolean(), boolean()}, {boolean(), boolean()}) |> elem(0) ==
              [{:tuple, [[{:value, true}, {:value, false}], [{:value, true}, {:value, false}]], 2}]
 
-      assert quoted_intersection({:foo, :bar}, {atom(), atom()}) ==
+      assert quoted_intersection({:foo, :bar}, {atom(), atom()}) |> elem(0) ==
              [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
 
-      assert quoted_intersection({:ok, integer()}, {:error, 1}) ==
+      assert quoted_intersection({:ok, integer()}, {:error, 1}) |> elem(0) ==
              []
 
       # TODO: Write using quoted_intersection once we have |
       assert Types.intersection([{:tuple, [[:atom, :integer], [:atom]], 2}],
-                                [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
+                                [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) |> elem(0) ==
              [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
 
       assert Types.intersection([{:tuple, [[:atom, :integer], [:atom]], 2}],
-                                [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
+                                [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) |> elem(0) ==
              [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
-    end
-
-    test "fns" do
-
     end
   end
 
@@ -226,6 +222,13 @@ defmodule TypesTest do
 
     test "apply with inference" do
       assert quoted_of(fn x ->
+        (fn y -> y end).(x)
+      end) |> types() ==
+        [{:fn, [
+          {[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}]}
+        ], 1}]
+
+      assert quoted_of(fn x ->
         (fn true -> true end).(x)
         (fn z ->
           (fn true -> true end).(z)
@@ -268,11 +271,16 @@ defmodule TypesTest do
 
     test "apply with inference on multiple clauses" do
       assert quoted_of(fn x ->
-        (fn y -> y end).(x)
+        (fn true -> true; false -> false end).(x)
+        (fn false -> false end).(x)
       end) |> types() ==
-        [{:fn, [
-          {[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}]}
-        ], 1}]
+        [{:fn, [{[[value: false]], [value: false]}], 1}]
+
+      assert quoted_of(fn x ->
+        (fn false -> false end).(x)
+        (fn true -> true; false -> false end).(x)
+      end) |> types() ==
+        [{:fn, [{[[value: false]], [value: false]}], 1}]
 
       assert quoted_of(fn x ->
         (fn false -> false; nil -> nil; _ -> true end).(x)
@@ -364,13 +372,73 @@ defmodule TypesTest do
 
       assert quoted_of((fn x ->
           {x.(:foo), x.(:bar)}
-        end).(fn y -> y end)) |> types() ==
-        [{:tuple, [[{:value, :bar}, {:value, :foo}], [{:value, :bar}, {:value, :foo}]], 2}]
+        end).(fn y -> y end)
+      ) |> types() ==
+        [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
 
+      # Same clauses
       assert quoted_of((fn x ->
           {x.(:foo), x.(:bar)}
-        end).(fn :foo -> :x; :bar -> :y end)) |> types() ==
+        end).(fn :foo -> :x; :bar -> :y end)
+      ) |> types() ==
         [{:tuple, [[{:value, :x}], [{:value, :y}]], 2}]
+
+      # More clauses
+      assert quoted_of((fn x ->
+          {x.(:foo), x.(:bar)}
+        end).(fn :foo -> :x; :bar -> :y; :baz -> :z end)) |> types() ==
+        [{:tuple, [[{:value, :x}], [{:value, :y}]], 2}]
+
+      # Less clauses
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+        quoted_of((fn x ->
+          {x.(:foo), x.(:bar), x.(:baz)}
+        end).(fn :foo -> :x; :bar -> :y end))
+
+      # Does not restrict functions
+      assert quoted_of((
+        c = fn y -> y end
+        (fn x -> {x.(:foo), x.(:bar)} end).(c)
+        c)) |> types() ==
+        [{:fn, [{[[{:var, {:y, nil}, 0}]], [{:var, {:y, nil}, 0}]}], 1}]
+    end
+
+    test "apply with function arguments and inference" do
+      # Binding are lazy (z is true and not true | false)
+      assert quoted_of(fn z ->
+        (fn true -> true; false -> false end).(z)
+        a = (fn x -> {x.(:foo), x.(:bar)} end).(fn y -> z end)
+        (fn true -> true end).(z)
+        a
+      end) |> types() ==
+        [{:fn, [{[[{:value, true}]], [{:tuple, [[value: true], [value: true]], 2}]}], 1}]
+
+      # z must be nil
+      assert quoted_of(fn z ->
+        (fn x -> nil = x.(:any) end).(fn y -> z end)
+        z
+      end) |> types() ==
+        [{:fn, [{[[value: nil]], [{:value, nil}]}], 1}]
+
+      # z conflicts with external value
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+        quoted_of(fn z ->
+          (fn true -> true; false -> false end).(z)
+          (fn x -> nil = x.(:any) end).(fn y -> z end)
+        end)
+
+      # z conflicts with internal value
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+        quoted_of(fn z ->
+          (fn x -> true = x.(:foo); false = x.(:bar)  end).(fn y -> z end)
+          z
+        end)
+
+      # z conflicts with internal value and multiple clauses
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+        quoted_of(fn z ->
+          (fn x -> true = x.(:foo); false = x.(:bar) end).(fn :foo -> z; :bar -> z end)
+        end)
     end
 
     test "match" do
