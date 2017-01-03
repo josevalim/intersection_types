@@ -462,24 +462,19 @@ defmodule TypesTest do
                 [left: 3]}
              ], 1}]
 
-      # Case extracted from
-      # Expansion: the Crucial Mechanism for Type Inference with Intersection Types
-      assert quoted_of(fn z ->
-        (fn x -> fn y -> y.(z) end end).(fn a -> fn b -> a.(a.(b)) end end)
-      end) |> types() ==
-        [{:fn, [
-          {[[{:var, {:z, nil}, 0}]],
-           [{:fn, [
-             {[[{:fn, [
-               {[[{:var, {:z, nil}, 0}]],
-                [{:var, {:return, Elixir}, 3}],
-                [3]}
+      assert quoted_of((fn x -> {x.(x), x.(x)} end).(fn y -> y end)) |> types() ==
+             [{:tuple,
+              [[{:fn, [
+                {[[{:var, {:inter, Elixir}, {:left, {:right, 5}}}]],
+                 [{:var, {:inter, Elixir}, {:left, {:right, 5}}}],
+                 [left: {:right, 5}]}
+              ], 1}],
+              [{:fn, [
+                {[[{:var, {:inter, Elixir}, {:left, 5}}]],
+                 [{:var, {:inter, Elixir}, {:left, 5}}],
+                 [left: 5]}
               ], 1}]],
-              [{:var, {:return, Elixir}, 3}],
-              []}
-           ], 1}],
-           [0]}
-        ], 1}]
+              2}]
     end
 
     test "match" do
@@ -597,52 +592,80 @@ defmodule TypesTest do
       assert quoted_of(fn x -> {x.(:foo), x.(:foo)} end) |> types() ==
              [{:fn, [
                {[[{:fn, [
-                 {[[value: :foo]], [{:var, {:return, Elixir}, 1}], [1]}
+                 {[[value: :foo]], [{:var, {:return, Elixir}, 2}], [2]}
                ], 1}]],
-               [{:tuple, [[{:var, {:return, Elixir}, 1}], [{:var, {:return, Elixir}, 1}]], 2}], []}
+               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 2}]], 2}], []}
              ], 1}]
 
       assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> types() ==
              [{:fn, [
                {[[{:fn, [
-                 {[[value: :bar]], [{:var, {:return, Elixir}, 2}], [2]},
-                 {[[value: :foo]], [{:var, {:return, Elixir}, 1}], [1]}
+                 {[[value: :bar]], [{:var, {:return, Elixir}, 4}], [4]},
+                 {[[value: :foo]], [{:var, {:return, Elixir}, 2}], [2]}
                ], 1}]],
-               [{:tuple, [[{:var, {:return, Elixir}, 1}], [{:var, {:return, Elixir}, 2}]], 2}], []}
+               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 4}]], 2}], []}
              ], 1}]
 
       assert quoted_of(fn x -> x.(x) end) |> types() ==
              [{:fn, [
                {[[{:intersection,
-                 [{:var, {:recur, Elixir}, 2}],
-                 [{:fn, [{[[{:var, {:recur, Elixir}, 2}]], [{:var, {:return, Elixir}, 1}], [1, 2]}], 1}]
+                 [{:var, {:x, nil}, 1}],
+                 [{:fn, [{[[{:var, {:x, nil}, 1}]], [{:var, {:return, Elixir}, 2}], [2]}], 1}]
                 }]],
-                [{:var, {:return, Elixir}, 1}], []}
+                [{:var, {:return, Elixir}, 2}], [1]}
              ], 1}]
 
       assert quoted_of(fn x -> x.({:ok, x}) end) |> types() ==
              [{:fn, [
                {[[{:intersection,
-                 [{:var, {:recur, Elixir}, 2}],
-                 [{:fn, [{[[{:tuple, [[{:value, :ok}], [{:var, {:recur, Elixir}, 2}]], 2}]], [{:var, {:return, Elixir}, 1}], [1, 2]}], 1}]
+                 [{:var, {:x, nil}, 1}],
+                 [{:fn, [{[[{:tuple, [[{:value, :ok}], [{:var, {:x, nil}, 1}]], 2}]], [{:var, {:return, Elixir}, 2}], [2]}], 1}]
                 }]],
-                [{:var, {:return, Elixir}, 1}], []}
+                [{:var, {:return, Elixir}, 2}], [1]}
              ], 1}]
 
       assert quoted_of(fn x -> x.(fn y -> y end) end) |> types() ==
              [{:fn, [
               {[[{:fn, [
                 {[[{:fn, [
-                  {[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], [1]}], 1}
+                  {[[{:var, {:y, nil}, 2}]], [{:var, {:y, nil}, 2}], [2]}], 1}
                  ]],
-                 [{:var, {:return, Elixir}, 2}], [2]}
-               ], 1}]], [{:var, {:return, Elixir}, 2}], []}
+                 [{:var, {:return, Elixir}, 3}], [3]}
+               ], 1}]], [{:var, {:return, Elixir}, 3}], []}
              ], 1}]
 
-      # TODO: Type those examples.
-      # assert quoted_of(fn x -> {x.(x), x.(x)} end) |> types() == :omg
-      # assert quoted_of(fn x -> {x.(x), x.(:foo)} end) |> types() == :omg
-      # assert quoted_of(fn x -> {x.(:foo), x.(x)} end) |> types() ==
+      assert quoted_of(fn x -> {x.(x), x.(:foo)} end) |> types() ==
+             [{:fn, [
+              {[[{:intersection,
+                  [{:var, {:x, nil}, 1}],
+                  [{:fn, [
+                    {[[value: :foo]], [{:var, {:return, Elixir}, 4}], [4]},
+                    {[[{:var, {:x, nil}, 1}]], [{:var, {:return, Elixir}, 2}], [2]}
+                  ], 1}]}]],
+               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 4}]], 2}],
+               [1]}
+              ], 1}]
+
+      assert quoted_of(fn x -> {x.(:foo), x.(x)} end) |> types() ==
+             [{:fn, [
+              {[[{:intersection,
+                  [{:var, {:x, nil}, 3}],
+                  [{:fn, [
+                    {[[{:var, {:x, nil}, 3}]], [{:var, {:return, Elixir}, 4}], [4]},
+                    {[[value: :foo]], [{:var, {:return, Elixir}, 2}], [2]}
+                  ], 1}]}]],
+               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 4}]], 2}],
+               [3]}
+              ], 1}]
+
+      assert quoted_of(fn a -> fn b -> a.(a.(b)) end end) |> types() ==
+             [{:fn, [
+               {[[{:intersection,
+                 [{:fn, [{[[{:var, {:b, nil}, 1}]], [{:var, {:return, Elixir}, 4}], [4]}], 1}],
+                 [{:fn, [{[[{:var, {:return, Elixir}, 4}]], [{:var, {:return, Elixir}, 5}], [5]}], 1}]}]],
+                [{:fn, [{[[{:var, {:b, nil}, 1}]], [{:var, {:return, Elixir}, 5}], [1]}], 1}],
+                []}
+             ], 1}]
 
       assert {:error, _, :rank2_restricted} =
                quoted_of((fn x -> x.(fn y -> y.(y) end) end))
