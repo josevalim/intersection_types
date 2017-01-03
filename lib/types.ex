@@ -106,8 +106,12 @@ defmodule Types do
   # {:defn, [clauses], arity}
   # {:tuple, args, arity}
   # {:var, var_ctx, var_key}
+  # {:intersection, left, right} (appears only on the left side)
   # :integer
   # :atom
+
+  # TODO: Use inline_list_funcs for performance.
+  # TODO: Implement generic type traversal functions.
 
   @doc """
   Converts the given Type AST to its inner type.
@@ -195,6 +199,18 @@ defmodule Types do
           type_lvars, type_rvars, acc_rvars, matched)
   end
 
+  defp unify_each({:intersection, inter_left, inter_right}, right,
+                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    with {type_lvars, type_rvars, acc_rvars, _, []} <-
+           unify(inter_left, [right], lvars, rvars, type_lvars, type_rvars, acc_rvars, []),
+         {type_lvars, type_rvars, acc_rvars, _, []} <-
+           unify(inter_right, [right], type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars, []) do
+      {type_lvars, type_rvars, acc_rvars}
+    else
+      _ -> :error
+    end
+  end
+
   defp unify_each({:var, _, key1}, {:var, _, key2} = right,
                   lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
     with {types, added, removed} <- unify_var(lvars, key1, [right]) do
@@ -267,7 +283,7 @@ defmodule Types do
     {type_lvars, type_rvars, acc_rvars}
   end
 
-  defp unify_fn([{left_head, left_body} | lefties], righties,
+  defp unify_fn([{left_head, left_body, _} | lefties], righties,
                 lvars, rvars, type_lvars, type_rvars, acc_rvars) do
     unify_fn(left_head, left_body, righties, lefties, righties,
              lvars, rvars, type_lvars, type_rvars, acc_rvars)
@@ -276,21 +292,24 @@ defmodule Types do
     {type_lvars, type_rvars, acc_rvars}
   end
 
-  defp unify_fn(left_head, left_body, [{right_head, right_body} | clauses], lefties, righties,
-                lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+  defp unify_fn(left_head, left_body, [{right_head, right_body, right_free} | clauses],
+                lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars) do
     with {temp_lvars, temp_rvars, temp_acc} <-
            unify_args(left_head, right_head, lvars, rvars, type_lvars, type_rvars, acc_rvars),
+         right_body =
+           bind(right_body, temp_rvars, type_rvars),
          {temp_lvars, temp_rvars, temp_acc, _, []} <-
-           unify(left_body, bind(right_body, temp_rvars, type_rvars), temp_lvars, temp_rvars, temp_lvars, temp_rvars, temp_acc, []) do
-      type_rvars = preserve_inferred(type_rvars, temp_rvars)
-      acc_rvars = preserve_inferred(acc_rvars, temp_acc)
+           unify(left_body, right_body, temp_lvars, temp_rvars, temp_lvars, temp_rvars, temp_acc, []) do
+      type_rvars = Map.drop(temp_rvars, right_free)
+      acc_rvars = Map.drop(temp_acc, right_free)
       unify_fn(lefties, righties, lvars, rvars, temp_lvars, type_rvars, acc_rvars)
     else
       _ -> unify_fn(left_head, left_body, clauses, lefties, righties,
                     lvars, rvars, type_lvars, type_rvars, acc_rvars)
     end
   end
-  defp unify_fn(_, _, [], _lefties, _righties, _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
+  defp unify_fn(_, _, [], _lefties, _righties,
+                _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
     :error
   end
 
@@ -312,8 +331,8 @@ defmodule Types do
 
   defp bind_each([{:fn, clauses, arity} | types], acc, vars, preserve) do
     clauses =
-      for {head, body} <- clauses do
-        {bind_args(head, vars, preserve), bind(body, vars, preserve)}
+      for {head, body, free} <- clauses do
+        {bind_args(head, vars, preserve), bind(body, vars, preserve), free}
       end
     bind_each(types, [{:fn, clauses, arity} | acc], vars, preserve)
   end
@@ -321,10 +340,15 @@ defmodule Types do
     case Map.get(preserve, key, []) do
       [] ->
         case Map.get(vars, key, []) do
+          {:recursive, existing} ->
+            # TODO: Convert types to strings when such is supported.
+            raise "type checker found undetected recursive definition " <>
+                  "when binding #{inspect type} to #{inspect existing}"
           [] ->
             bind_each(types, [type | acc], vars, preserve)
           existing ->
-            bind_each(types, union(bind_each(existing, [], vars, preserve), acc), vars, preserve)
+            existing = bind_each(existing, [], Map.put(vars, key, {:recursive, existing}), preserve)
+            bind_each(types, union(existing, acc), vars, preserve)
         end
       _ ->
         bind_each(types, [type | acc], vars, preserve)
@@ -332,6 +356,11 @@ defmodule Types do
   end
   defp bind_each([{:tuple, args, arity} | types], acc, vars, preserve) do
     bind_each(types, [{:tuple, bind_args(args, vars, preserve), arity} | acc], vars, preserve)
+  end
+  defp bind_each([{:intersection, left, right} | types], acc, vars, preserve) do
+    left = bind(left, vars, preserve)
+    right = bind(right, vars, preserve)
+    bind_each(types, [{:intersection, left, right} | acc], vars, preserve)
   end
   defp bind_each([type | types], acc, vars, preserve) do
     bind_each(types, [type | acc], vars, preserve)
@@ -541,23 +570,38 @@ defmodule Types do
               error(meta, {:disjoint_apply, pending, clauses, arg_types})
           end
         [{:var, _, var_key}] ->
-          %{counter: counter, inferred: inferred} = state
+          %{inferred: inferred, counter: counter} = state
 
           case of_var_apply(var_key, arg_types, arity, inferred) do
             {:match, types, return} ->
               inferred = Map.put(inferred, var_key, types)
               ok(return, %{state | inferred: inferred})
             {:nomatch, types} ->
-              return = [{:var, {:var, Elixir}, counter}]
+              recur = [{:var, {:recur, Elixir}, counter}]
+              return = [{:var, {:return, Elixir}, counter + 1}]
+
+              # Go through the args of a var apply and see if they are recursive.
+              # If so, write them in the intersection format as explained in
+              # "What are principal typings and what are they good for?", Trevor Jim, 1996
+              {args, intersection?} =
+                of_var_apply_args([arg_types], %{var_key => recur}, [], false)
+
               types =
-                for {:fn, clauses, arity} <- types do
-                  {:fn, [{[arg_types], return} | clauses], arity}
+                case intersection? do
+                  true ->
+                    extended =
+                      for {:fn, clauses, arity} <- types do
+                        {:fn, [{args, return, [counter, counter + 1]} | clauses], arity}
+                      end
+                    [{:intersection, recur, extended}]
+                  false ->
+                    for {:fn, clauses, arity} <- types do
+                      {:fn, [{args, return, [counter + 1]} | clauses], arity}
+                    end
                 end
-              inferred =
-                inferred
-                |> Map.put(var_key, types)
-                |> Map.put(counter, [])
-              ok(return, %{state | inferred: inferred, counter: counter + 1})
+
+              inferred = Map.put(inferred, var_key, types)
+              ok(return, %{state | inferred: inferred, counter: counter + 2})
             :error ->
               error(meta, {:invalid_fn, fun_type, arity})
           end
@@ -585,12 +629,24 @@ defmodule Types do
             # TODO: Use of_apply
             return =
               for {:fn, clauses, _arity} <- types,
-                  {[head], body} <- clauses,
+                  {[head], body, _} <- clauses,
                   body <- of_var_apply_body(head, body, arg, inferred),
                   do: body
             if return == [], do: {:nomatch, types}, else: {:match, types, return}
         end
     end
+  end
+
+  defp of_var_apply_args([arg | args], binding, acc_args, acc_replace) do
+    case bind(arg, binding) do
+      ^arg ->
+        of_var_apply_args(args, binding, [arg | acc_args], acc_replace)
+      arg ->
+        of_var_apply_args(args, binding, [arg | acc_args], true)
+    end
+  end
+  defp of_var_apply_args([], _binding, acc_args, acc_replace) do
+    {:lists.reverse(acc_args), acc_replace}
   end
 
   # TODO: Use of_apply
@@ -601,7 +657,7 @@ defmodule Types do
     end
   end
 
-  defp of_apply([{[head], body} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
+  defp of_apply([{[head], body, _free} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
     with {lvars, _, rvars, [_ | _] = matched, _} <- unify(head, arg, inferred, acc_inferred) do
       acc_body = union(acc_body, bind(body, lvars))
       of_apply(clauses, arg, inferred, acc_arg -- matched, rvars, acc_body)
@@ -637,14 +693,22 @@ defmodule Types do
   # And the function must return {:ok, :error}.
   defp of_match(left, right, inferred, vars, match) do
     with {lvars, _, rvars, _, []} <- unify(left, right, inferred, inferred) do
-      lvars =
-        Enum.reduce(match, vars, fn {var_ctx, types}, acc ->
-          Map.put(acc, var_ctx, bind(types, lvars))
-        end)
-      {:ok, lvars, rvars, bind(right, inferred)}
+      {lvars, rvars} = of_match_vars(Map.to_list(match), lvars, vars, rvars)
+      {:ok, lvars, rvars, bind(right, rvars)}
     else
       _ -> :error
     end
+  end
+
+  # TODO: If types is always a var, we can remove the
+  # indirection once we move to the full constraint system.
+  defp of_match_vars([{var_ctx, [{_, _, counter}] = types} | matches], lvars, vars, inferred) do
+    of_match_vars(matches, lvars,
+                  Map.put(vars, var_ctx, bind(types, lvars)),
+                  Map.delete(inferred, counter))
+  end
+  defp of_match_vars([], _lvars, vars, inferred) do
+    {vars, inferred}
   end
 
   ## Clauses
@@ -661,13 +725,19 @@ defmodule Types do
          {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state) do
       head = bind_args([head], inferred, preserve)
       body = bind(body, inferred, preserve)
-      preserve = preserve_inferred(preserve, inferred)
-      acc_state = replace_vars(%{acc_state | inferred: preserve}, state)
-      of_clauses(clauses, state, [{head, body} | acc_clauses], acc_state)
+      free_variables = free_variables(preserve, inferred)
+      inferred = Map.drop(inferred, free_variables)
+      acc_state = replace_vars(%{acc_state | inferred: inferred}, state)
+      of_clauses(clauses, state, [{head, body, free_variables} | acc_clauses], acc_state)
     end
   end
   defp of_clauses([], _state, acc_clauses, acc_state) do
     {:ok, :lists.reverse(acc_clauses), acc_state}
+  end
+
+  defp free_variables(preserve, inferred) do
+    inferred = Enum.reduce(preserve, inferred, fn {k, _}, acc -> Map.delete(acc, k) end)
+    for {k, []} <- inferred, do: k
   end
 
   ## Blocks
@@ -765,13 +835,6 @@ defmodule Types do
   end
   defp args([], acc_args, acc_count, acc_state, _state, _fun) do
     {:ok, :lists.reverse(acc_args), acc_count, acc_state}
-  end
-
-  # Keep only the variables we already knew about.
-  defp preserve_inferred(preserve, latest) do
-    Enum.reduce(preserve, preserve, fn {i, _}, acc ->
-      Map.put(acc, i, Map.fetch!(latest, i))
-    end)
   end
 
   @compile {:inline, ok: 2, error: 2}
