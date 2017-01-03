@@ -199,24 +199,62 @@ defmodule Types do
           type_lvars, type_rvars, acc_rvars, matched)
   end
 
-  defp unify_each({:intersection, inter_left, inter_right}, right,
+  defp unify_expansion([{head, body, free} | clauses], left_acc, right_acc) do
+    {left_free, left_bind} = unify_expansion_vars(free, :left, [], %{})
+    {right_free, right_bind} = unify_expansion_vars(free, :right, [], %{})
+    left = {bind_args(head, left_bind), bind(body, left_bind), left_free}
+    right = {bind_args(head, right_bind), bind(body, right_bind), right_free}
+    unify_expansion(clauses, [left | left_acc], [right | right_acc])
+  end
+  defp unify_expansion([], left_acc, right_acc) do
+    {:lists.reverse(left_acc), :lists.reverse(right_acc)}
+  end
+
+  defp unify_expansion_vars([name | names], kind, vars, bind) do
+    unify_expansion_vars(names, kind, [{kind, name} | vars],
+                         Map.put(bind, name, [{:var, {:inter, Elixir}, {kind, name}}]))
+  end
+  defp unify_expansion_vars([], _kind, vars, bind) do
+    {:lists.reverse(vars), bind}
+  end
+
+  # Once an intersection is found, we need to solve it by expanding
+  # the function into an intersection as described in:
+  # "Expansion: the Crucial Mechanism for Type Inference with Intersection Types"
+  # Sébastien Carlier, J. B. Wells (2005)
+  defp unify_each({:intersection, inter_left, inter_right}, {:fn, clauses, arity},
                   lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    {left_clauses, right_clauses} = unify_expansion(clauses, [], [])
+
     with {type_lvars, type_rvars, acc_rvars, _, []} <-
-           unify(inter_left, [right], lvars, rvars, type_lvars, type_rvars, acc_rvars, []),
+           unify(inter_left, [{:fn, left_clauses, arity}], lvars, rvars, type_lvars, type_rvars, acc_rvars, []),
          {type_lvars, type_rvars, acc_rvars, _, []} <-
-           unify(inter_right, [right], type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars, []) do
+           unify(inter_right, [{:fn, right_clauses, arity}], type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars, []) do
       {type_lvars, type_rvars, acc_rvars}
     else
       _ -> :error
     end
   end
 
-  defp unify_each({:var, _, key1}, {:var, _, key2} = right,
-                  lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
-    with {types, added, removed} <- unify_var(lvars, key1, [right]) do
-      {Map.update(type_lvars, key1, types, &((&1 -- removed) ++ added)),
-       type_rvars,
-       Map.put(acc_rvars, key2, Map.fetch!(type_rvars, key2))}
+  # intersections can only be compared to arrows (functions).
+  defp unify_each({:intersection, _, _}, _,
+                  _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
+    :error
+  end
+
+  defp unify_each({:var, _, key1} = left, {:var, _, key2} = right,
+                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    case Map.get(lvars, key1, []) do
+      [] ->
+        {Map.update(type_lvars, key1, [right], &(&1 ++ [right])),
+         type_rvars,
+         Map.put(acc_rvars, key2, Map.get(type_rvars, key2, []))}
+      _ ->
+        with {types, added, removed} <- unify_var(rvars, key2, [left]) do
+          {type_lvars,
+           Map.update(type_rvars, key2, types, &((&1 -- removed) ++ added)),
+           Map.update(acc_rvars, key2, types, &((&1 -- removed) ++ added))}
+        end
     end
   end
 
@@ -369,7 +407,10 @@ defmodule Types do
     acc
   end
 
-  defp bind_args(args, vars, preserve) do
+  @doc """
+  Binds a list of arguments.
+  """
+  def bind_args(args, vars, preserve \\ %{}) do
     Enum.map(args, &bind(&1, vars, preserve))
   end
 
@@ -552,6 +593,7 @@ defmodule Types do
 
   # TODO: Support multiple args
   # TODO: Support call merging
+  # TODO: Add a rank 2 restriction
   defp of({{:., _, [fun]}, meta, [arg] = args}, state) do
     with {:ok, fun_type, fun_state} <- of(fun, state),
          {:ok, arg_types, arg_state} <- of(arg, replace_vars(fun_state, state)) do
@@ -582,7 +624,7 @@ defmodule Types do
 
               # Go through the args of a var apply and see if they are recursive.
               # If so, write them in the intersection format as explained in
-              # "What are principal typings and what are they good for?", Trevor Jim, 1996
+              # "What are principal typings and what are they good for?", Trevor Jim (1996)
               {args, intersection?} =
                 of_var_apply_args([arg_types], %{var_key => recur}, [], false)
 

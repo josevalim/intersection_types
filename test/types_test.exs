@@ -453,11 +453,33 @@ defmodule TypesTest do
       # TODO: Move this to apply with rank-2 variable
       # assert quoted_of((x = fn x -> x end; x.(x))) |> types() == :omg
 
-      # assert quoted_of((fn t -> t.(fn y -> y.(fn z -> z.(fn w -> w end) end) end); false end)) == :omg
-      # assert quoted_of((fn x -> x.(fn y -> y.(x) end) end)) |> types() == :omg
-      # assert quoted_of((fn x -> x.(fn y -> y.(y) end) end)) |> types() == :omg
-      # assert quoted_of((fn x -> x.(fn y -> y end) end).(fn y -> y.(y) end)) |> types() == :omg
-      assert quoted_of((fn x -> x.(x) end).(fn y -> y end)) |> types() == :omg
+      # Case extracted from
+      # What are principal typings and what are they good for?
+      assert quoted_of((fn x -> x.(x) end).(fn y -> y end)) |> types() ==
+             [{:fn, [
+               {[[{:var, {:inter, Elixir}, {:left, 3}}]],
+                [{:var, {:inter, Elixir}, {:left, 3}}],
+                [left: 3]}
+             ], 1}]
+
+      # Case extracted from
+      # Expansion: the Crucial Mechanism for Type Inference with Intersection Types
+      assert quoted_of(fn z ->
+        (fn x -> fn y -> y.(z) end end).(fn a -> fn b -> a.(a.(b)) end end)
+      end) |> types() ==
+        [{:fn, [
+          {[[{:var, {:z, nil}, 0}]],
+           [{:fn, [
+             {[[{:fn, [
+               {[[{:var, {:z, nil}, 0}]],
+                [{:var, {:return, Elixir}, 4}],
+                [4]}
+              ], 1}]],
+              [{:var, {:return, Elixir}, 4}],
+              []}
+           ], 1}],
+           [0]}
+        ], 1}]
     end
 
     test "match" do
@@ -617,8 +639,12 @@ defmodule TypesTest do
                ], 1}]], [{:var, {:return, Elixir}, 3}], []}
              ], 1}]
 
-      # TODO: Go through examples in the Polar paper that do not type check.
-      # assert quoted_of(fn f -> fn x -> f.(f.(x)) end end) == :omg
+      # assert quoted_of(fn x -> {x.(x), x.(x)} end) |> types() ==
+      # assert quoted_of(fn x -> {x.(x), x.(:foo)} end) |> types() ==
+      # assert quoted_of(fn x -> {x.(:foo), x.(x)} end) |> types() ==
+
+      # TODO: This should error with a rank 2 restriction.
+      # assert quoted_of((fn x -> x.(fn y -> y.(y) end) end)) |> types() == :omg
     end
   end
 end
