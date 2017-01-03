@@ -70,7 +70,7 @@ defmodule Types do
   # The :vars map keeps all Elixir variables and their types
   # The :match map keeps all Elixir variables defined in a match
   # The :inferred map keeps track of all inferred types (they have a counter)
-  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0}
+  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0, rank: 0}
 
   defp replace_vars(state, %{vars: vars}) do
     %{state | vars: vars}
@@ -566,9 +566,9 @@ defmodule Types do
     end
   end
 
-  defp of({:fn, _, clauses}, state) do
-    with {:ok, clauses, state} <- of_clauses(clauses, state) do
-      ok([{:fn, clauses, 1}], state)
+  defp of({:fn, _, clauses}, %{rank: rank} = state) do
+    with {:ok, clauses, state} <- of_clauses(clauses, %{state | rank: rank + 1}) do
+      ok([{:fn, clauses, 1}], %{state | rank: rank})
     end
   end
 
@@ -593,7 +593,6 @@ defmodule Types do
 
   # TODO: Support multiple args
   # TODO: Support call merging
-  # TODO: Add a rank 2 restriction
   defp of({{:., _, [fun]}, meta, [arg] = args}, state) do
     with {:ok, fun_type, fun_state} <- of(fun, state),
          {:ok, arg_types, arg_state} <- of(arg, replace_vars(fun_state, state)) do
@@ -612,15 +611,15 @@ defmodule Types do
               error(meta, {:disjoint_apply, pending, clauses, arg_types})
           end
         [{:var, _, var_key}] ->
-          %{inferred: inferred, counter: counter} = state
+          %{inferred: inferred, counter: counter, rank: rank} = state
 
           case of_var_apply(var_key, arg_types, arity, inferred) do
             {:match, types, return} ->
               inferred = Map.put(inferred, var_key, types)
               ok(return, %{state | inferred: inferred})
             {:nomatch, types} ->
-              recur = [{:var, {:recur, Elixir}, counter}]
-              return = [{:var, {:return, Elixir}, counter + 1}]
+              return = [{:var, {:return, Elixir}, counter}]
+              recur = [{:var, {:recur, Elixir}, counter + 1}]
 
               # Go through the args of a var apply and see if they are recursive.
               # If so, write them in the intersection format as explained in
@@ -628,22 +627,24 @@ defmodule Types do
               {args, intersection?} =
                 of_var_apply_args([arg_types], %{var_key => recur}, [], false)
 
-              types =
-                case intersection? do
-                  true ->
-                    extended =
-                      for {:fn, clauses, arity} <- types do
-                        {:fn, [{args, return, [counter, counter + 1]} | clauses], arity}
-                      end
-                    [{:intersection, recur, extended}]
-                  false ->
+              cond do
+                intersection? and rank >= 2 ->
+                  error(meta, :rank2_restricted)
+                intersection? ->
+                  types =
                     for {:fn, clauses, arity} <- types do
-                      {:fn, [{args, return, [counter + 1]} | clauses], arity}
+                      {:fn, [{args, return, [counter, counter + 1]} | clauses], arity}
                     end
-                end
-
-              inferred = Map.put(inferred, var_key, types)
-              ok(return, %{state | inferred: inferred, counter: counter + 2})
+                  inferred = Map.put(inferred, var_key, [{:intersection, recur, types}])
+                  ok(return, %{state | inferred: inferred, counter: counter + 2})
+                true ->
+                  types =
+                    for {:fn, clauses, arity} <- types do
+                      {:fn, [{args, return, [counter]} | clauses], arity}
+                    end
+                  inferred = Map.put(inferred, var_key, types)
+                  ok(return, %{state | inferred: inferred, counter: counter + 1})
+              end
             :error ->
               error(meta, {:invalid_fn, fun_type, arity})
           end

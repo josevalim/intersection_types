@@ -472,10 +472,10 @@ defmodule TypesTest do
            [{:fn, [
              {[[{:fn, [
                {[[{:var, {:z, nil}, 0}]],
-                [{:var, {:return, Elixir}, 4}],
-                [4]}
+                [{:var, {:return, Elixir}, 3}],
+                [3]}
               ], 1}]],
-              [{:var, {:return, Elixir}, 4}],
+              [{:var, {:return, Elixir}, 3}],
               []}
            ], 1}],
            [0]}
@@ -597,36 +597,36 @@ defmodule TypesTest do
       assert quoted_of(fn x -> {x.(:foo), x.(:foo)} end) |> types() ==
              [{:fn, [
                {[[{:fn, [
-                 {[[value: :foo]], [{:var, {:return, Elixir}, 2}], [2]}
+                 {[[value: :foo]], [{:var, {:return, Elixir}, 1}], [1]}
                ], 1}]],
-               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 2}]], 2}], []}
+               [{:tuple, [[{:var, {:return, Elixir}, 1}], [{:var, {:return, Elixir}, 1}]], 2}], []}
              ], 1}]
 
       assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> types() ==
              [{:fn, [
                {[[{:fn, [
-                 {[[value: :bar]], [{:var, {:return, Elixir}, 4}], [4]},
-                 {[[value: :foo]], [{:var, {:return, Elixir}, 2}], [2]}
+                 {[[value: :bar]], [{:var, {:return, Elixir}, 2}], [2]},
+                 {[[value: :foo]], [{:var, {:return, Elixir}, 1}], [1]}
                ], 1}]],
-               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 4}]], 2}], []}
+               [{:tuple, [[{:var, {:return, Elixir}, 1}], [{:var, {:return, Elixir}, 2}]], 2}], []}
              ], 1}]
 
       assert quoted_of(fn x -> x.(x) end) |> types() ==
              [{:fn, [
                {[[{:intersection,
-                 [{:var, {:recur, Elixir}, 1}],
-                 [{:fn, [{[[{:var, {:recur, Elixir}, 1}]], [{:var, {:return, Elixir}, 2}], [1, 2]}], 1}]
+                 [{:var, {:recur, Elixir}, 2}],
+                 [{:fn, [{[[{:var, {:recur, Elixir}, 2}]], [{:var, {:return, Elixir}, 1}], [1, 2]}], 1}]
                 }]],
-                [{:var, {:return, Elixir}, 2}], []}
+                [{:var, {:return, Elixir}, 1}], []}
              ], 1}]
 
       assert quoted_of(fn x -> x.({:ok, x}) end) |> types() ==
              [{:fn, [
                {[[{:intersection,
-                 [{:var, {:recur, Elixir}, 1}],
-                 [{:fn, [{[[{:tuple, [[{:value, :ok}], [{:var, {:recur, Elixir}, 1}]], 2}]], [{:var, {:return, Elixir}, 2}], [1, 2]}], 1}]
+                 [{:var, {:recur, Elixir}, 2}],
+                 [{:fn, [{[[{:tuple, [[{:value, :ok}], [{:var, {:recur, Elixir}, 2}]], 2}]], [{:var, {:return, Elixir}, 1}], [1, 2]}], 1}]
                 }]],
-                [{:var, {:return, Elixir}, 2}], []}
+                [{:var, {:return, Elixir}, 1}], []}
              ], 1}]
 
       assert quoted_of(fn x -> x.(fn y -> y end) end) |> types() ==
@@ -635,16 +635,17 @@ defmodule TypesTest do
                 {[[{:fn, [
                   {[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], [1]}], 1}
                  ]],
-                 [{:var, {:return, Elixir}, 3}], [3]}
-               ], 1}]], [{:var, {:return, Elixir}, 3}], []}
+                 [{:var, {:return, Elixir}, 2}], [2]}
+               ], 1}]], [{:var, {:return, Elixir}, 2}], []}
              ], 1}]
 
-      # assert quoted_of(fn x -> {x.(x), x.(x)} end) |> types() ==
-      # assert quoted_of(fn x -> {x.(x), x.(:foo)} end) |> types() ==
+      # TODO: Type those examples.
+      # assert quoted_of(fn x -> {x.(x), x.(x)} end) |> types() == :omg
+      # assert quoted_of(fn x -> {x.(x), x.(:foo)} end) |> types() == :omg
       # assert quoted_of(fn x -> {x.(:foo), x.(x)} end) |> types() ==
 
-      # TODO: This should error with a rank 2 restriction.
-      # assert quoted_of((fn x -> x.(fn y -> y.(y) end) end)) |> types() == :omg
+      assert {:error, _, :rank2_restricted} =
+               quoted_of((fn x -> x.(fn y -> y.(y) end) end))
     end
   end
 end
