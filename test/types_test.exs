@@ -370,6 +370,9 @@ defmodule TypesTest do
           {x.(:foo), x.(:bar)}
         )) |> types() ==
         [{:tuple, [[value: :foo], [value: :bar]], 2}]
+
+      assert quoted_of((y = fn x -> x end; y.(y))) |> types() ==
+             [{:fn, [{[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}], [0]}], 1}]
     end
 
     test "apply with function arguments" do
@@ -450,28 +453,25 @@ defmodule TypesTest do
     end
 
     test "apply with rank-2 function argument" do
-      # TODO: Move this to apply with rank-2 variable
-      # assert quoted_of((x = fn x -> x end; x.(x))) |> types() == :omg
-
       # Case extracted from
       # What are principal typings and what are they good for?
       assert quoted_of((fn x -> x.(x) end).(fn y -> y end)) |> types() ==
              [{:fn, [
-               {[[{:var, {:inter, Elixir}, {:left, 3}}]],
-                [{:var, {:inter, Elixir}, {:left, 3}}],
+               {[[{:var, {:gen, Elixir}, {:left, 3}}]],
+                [{:var, {:gen, Elixir}, {:left, 3}}],
                 [left: 3]}
              ], 1}]
 
       assert quoted_of((fn x -> {x.(x), x.(x)} end).(fn y -> y end)) |> types() ==
              [{:tuple,
               [[{:fn, [
-                {[[{:var, {:inter, Elixir}, {:left, {:right, 5}}}]],
-                 [{:var, {:inter, Elixir}, {:left, {:right, 5}}}],
+                {[[{:var, {:gen, Elixir}, {:left, {:right, 5}}}]],
+                 [{:var, {:gen, Elixir}, {:left, {:right, 5}}}],
                  [left: {:right, 5}]}
               ], 1}],
               [{:fn, [
-                {[[{:var, {:inter, Elixir}, {:left, 5}}]],
-                 [{:var, {:inter, Elixir}, {:left, 5}}],
+                {[[{:var, {:gen, Elixir}, {:left, 5}}]],
+                 [{:var, {:gen, Elixir}, {:left, 5}}],
                  [left: 5]}
               ], 1}]],
               2}]

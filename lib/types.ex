@@ -1,54 +1,6 @@
 defmodule Types do
   @moduledoc """
-  A type checker for Elixir.
-
-  The type system builds on top of Elixir patterns and
-  values to describe types.
-
-  The type system exists around two constructs:
-
-    1. Patterns are non-recursive types that may be used by
-       both typed and untyped code
-
-    2. Types may be recursive and used exclusively by typed code
-
-  We will look into those constructs below.
-
-  ## Patterns
-
-  Patterns are non-recursive types made of values and other
-  patterns. For example, the built-in boolean pattern may be
-  defined as follows:
-
-      pattern boolean() :: true | false
-
-  A pattern can be used as types on typed code:
-
-      deftyped Strict do
-        def strict_or(boolean(), boolean()) :: boolean()
-        def strict_or(true, true), do: true
-        def strict_or(true, false), do: true
-        def strict_or(false, true), do: true
-        def strict_or(false, false), do: false
-      end
-
-  As well as patterns on non-typed code:
-
-      defmodule App do
-        def value_accepted?(accept :: boolean()) do
-          # ...
-        end
-      end
-
-  ## Types
-
-  Types are constructs build on top of values, patterns or other
-  types which may be recursive. Since types are recursive, they can
-  only be effectively checked statically. For example, the built-in
-  type `list(a)` is defined recursively as:
-
-      type list(a) :: empty_list() | cons(a, list(a))
-
+  Type inference and checking for Elixir.
   """
 
   ## Patterns
@@ -202,22 +154,14 @@ defmodule Types do
   end
 
   defp unify_expansion([{head, body, free} | clauses], left_acc, right_acc) do
-    {left_free, left_bind} = unify_expansion_vars(free, :left, [], %{})
-    {right_free, right_bind} = unify_expansion_vars(free, :right, [], %{})
+    {left_free, left_bind} = generalize_vars(free, :left)
+    {right_free, right_bind} = generalize_vars(free, :right)
     left = {bind_args(head, left_bind), bind(body, left_bind), left_free}
     right = {bind_args(head, right_bind), bind(body, right_bind), right_free}
     unify_expansion(clauses, [left | left_acc], [right | right_acc])
   end
   defp unify_expansion([], left_acc, right_acc) do
     {:lists.reverse(left_acc), :lists.reverse(right_acc)}
-  end
-
-  defp unify_expansion_vars([name | names], kind, vars, bind) do
-    unify_expansion_vars(names, kind, [{kind, name} | vars],
-                         Map.put(bind, name, [{:var, {:inter, Elixir}, {kind, name}}]))
-  end
-  defp unify_expansion_vars([], _kind, vars, bind) do
-    {:lists.reverse(vars), bind}
   end
 
   defp unify_expansion_intersection([{_, _, free} | clauses], vars) do
@@ -811,7 +755,11 @@ defmodule Types do
     end
   end
 
-  defp of_apply_each([{[head], body, _free} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
+  defp of_apply_each([{head, body, free} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
+    {_, bind} = generalize_vars(free, :let)
+    [head] = bind_args(head, bind)
+    body = bind(body, bind)
+
     with {lvars, _, rvars, [_ | _] = matched, _} <- unify(head, arg, inferred, acc_inferred) do
       acc_body = union(acc_body, bind(body, lvars))
       of_apply_each(clauses, arg, inferred, acc_arg -- matched, rvars, acc_body)
@@ -988,6 +936,22 @@ defmodule Types do
   end
   defp args([], acc_args, acc_count, acc_state, _state, _fun) do
     {:ok, :lists.reverse(acc_args), acc_count, acc_state}
+  end
+
+  # This is generalization used by intersection and let-polymorhism.
+  # It works by going through all free variables in a function and
+  # giving them a new binding.
+  defp generalize_vars(free, kind) do
+    generalize_vars(free, kind, [], %{})
+  end
+
+  defp generalize_vars([name | names], kind, vars, bind) do
+    kinded = {kind, name}
+    bind = Map.put(bind, name, [{:var, {:gen, Elixir}, kinded}])
+    generalize_vars(names, kind, [kinded | vars], bind)
+  end
+  defp generalize_vars([], _kind, vars, bind) do
+    {:lists.reverse(vars), bind}
   end
 
   @compile {:inline, ok: 2, error: 2}
