@@ -595,19 +595,10 @@ defmodule Types do
   # TODO: Support multiple args
   # TODO: Support call merging
   defp of({{:., _, [fun]}, meta, args}, state) do
-    with {:ok, fun_type, fun_state} <- of(fun, state) do
+    with {:ok, fun_types, fun_state} <- of(fun, state) do
       state = replace_vars(fun_state, state)
       arity = length(args)
-
-      # TODO: Generalize matching to support multiple functions
-      case fun_type do
-        [{:fn, clauses, ^arity}] ->
-          of_apply(clauses, meta, args, state, fun_state)
-        [{:var, var_ctx, var_counter}] ->
-          of_var_apply(var_ctx, var_counter, meta, args, arity, state, fun_state)
-        _ ->
-          error(meta, {:invalid_fn, fun_type, arity})
-      end
+      of_apply(fun_types, arity, meta, args, state, [], fun_state)
     end
   end
 
@@ -615,9 +606,26 @@ defmodule Types do
     literal(value, state, &of/2)
   end
 
-  ## Var apply
+  ## Apply
 
-  defp of_var_apply(var_ctx, var_counter, meta, [arg], arity, state, fun_state) do
+  defp of_apply([{:fn, clauses, arity} | types], arity, meta, args, state, acc, fun_state) do
+    with {:ok, return, state} <- of_fn_apply(clauses, meta, args, state),
+         do: of_apply(types, arity, meta, args, state, union(acc, return), fun_state)
+  end
+  defp of_apply([{:var, var_ctx, var_counter} | types], arity, meta, args, state, acc, fun_state) do
+    with {:ok, return, state} <- of_var_apply(var_ctx, var_counter, meta, args, arity, state),
+         do: of_apply(types, arity, meta, args, state, union(acc, return), fun_state)
+  end
+  defp of_apply([fun_type | _], arity, meta, _args, _state, _acc, _fun_state) do
+    error(meta, {:invalid_fn, fun_type, arity})
+  end
+  defp of_apply([], _arity, _meta, _args, state, acc, fun_state) do
+    {:ok, acc, lift_vars(state, fun_state)}
+  end
+
+  ### Var apply
+
+  defp of_var_apply(var_ctx, var_counter, meta, [arg], arity, state) do
     %{counter: recur_counter, inferred: inferred, vars: vars, rank: rank} = state
     recur = [{:var, var_ctx, recur_counter}]
 
@@ -630,8 +638,7 @@ defmodule Types do
                 counter: recur_counter + 1,
                 inferred: Map.put(inferred, recur_counter, [])}
 
-    with {:ok, arg_types, arg_state} <- of(arg, state) do
-      state = lift_vars(arg_state, fun_state)
+    with {:ok, arg_types, state} <- of(arg, state) do
       %{inferred: inferred, counter: counter, vars: vars, read: read} = state
 
       # Revert the original variable unless it was reassigned.
@@ -739,14 +746,13 @@ defmodule Types do
     :error
   end
 
-  ## Apply
+  ### Fn Apply
 
-  defp of_apply(clauses, meta, [arg], state, fun_state) do
-    with {:ok, arg_types, arg_state} <- of(arg, state) do
-      state = lift_vars(arg_state, fun_state)
+  defp of_fn_apply(clauses, meta, [arg], state) do
+    with {:ok, arg_types, state} <- of(arg, state) do
       %{inferred: inferred} = state
 
-      case of_apply_each(clauses, arg_types, inferred, arg_types, inferred, []) do
+      case of_fn_apply_each(clauses, arg_types, inferred, arg_types, inferred, []) do
         {:ok, acc_inferred, acc_body} ->
           ok(acc_body, %{state | inferred: acc_inferred})
         {:error, pending} ->
@@ -755,22 +761,22 @@ defmodule Types do
     end
   end
 
-  defp of_apply_each([{head, body, free} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
+  defp of_fn_apply_each([{head, body, free} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
     {_, bind} = generalize_vars(free, :let)
     [head] = bind_args(head, bind)
     body = bind(body, bind)
 
     with {lvars, _, rvars, [_ | _] = matched, _} <- unify(head, arg, inferred, acc_inferred) do
       acc_body = union(acc_body, bind(body, lvars))
-      of_apply_each(clauses, arg, inferred, acc_arg -- matched, rvars, acc_body)
+      of_fn_apply_each(clauses, arg, inferred, acc_arg -- matched, rvars, acc_body)
     else
-      _ -> of_apply_each(clauses, arg, inferred, acc_arg, acc_inferred, acc_body)
+      _ -> of_fn_apply_each(clauses, arg, inferred, acc_arg, acc_inferred, acc_body)
     end
   end
-  defp of_apply_each([], _arg, _inferred, [], acc_inferred, acc_body) do
+  defp of_fn_apply_each([], _arg, _inferred, [], acc_inferred, acc_body) do
     {:ok, acc_inferred, acc_body}
   end
-  defp of_apply_each([], _arg, _inferred, pending, _acc_inferred, _acc_body) do
+  defp of_fn_apply_each([], _arg, _inferred, pending, _acc_inferred, _acc_body) do
     {:error, pending}
   end
 
