@@ -22,9 +22,9 @@ defmodule Types do
   # The :vars map keeps all Elixir variables and their types
   # The :match map keeps all Elixir variables defined in a match
   # The :inferred map keeps track of all inferred types (they have a counter)
-  # The :read map keeps track of all counters that have been read (for finding recursive calls)
+  # The :rewrite map keeps track of all counters that must be rewritten (for finding recursive calls)
   # The :rank map keeps variables defined in the first rank
-  @state %{vars: %{}, match: %{}, inferred: %{}, read: %{}, counter: 0, rank: nil}
+  @state %{vars: %{}, match: %{}, inferred: %{}, rewrite: %{}, counter: 0, rank: nil}
 
   defp replace_vars(state, %{vars: vars}) do
     %{state | vars: vars}
@@ -555,11 +555,16 @@ defmodule Types do
     of(expr, @state)
   end
 
-  defp of({var, meta, ctx}, %{vars: vars} = state)
+  defp of({var, meta, ctx}, %{vars: vars, rewrite: rewrite} = state)
        when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
     case Map.fetch(vars, {var, ctx}) do
       {:ok, [{:var, _, var_counter}] = types} ->
-        ok(types, put_in(state.read[var_counter], true))
+        case rewrite do
+          %{^var_counter => {_, types}} ->
+            ok(types, put_in(state.rewrite[var_counter], {true, types}))
+          %{} ->
+            ok(types, state)
+        end
       {:ok, types} ->
         ok(types, state)
       :error ->
@@ -626,7 +631,8 @@ defmodule Types do
   ### Var apply
 
   defp of_var_apply(var_ctx, var_counter, meta, [arg], arity, state) do
-    %{counter: recur_counter, inferred: inferred, vars: vars, rank: rank} = state
+    %{counter: recur_counter, inferred: inferred, rank: rank, rewrite: rewrite} = state
+    previous_rewrite = Map.get(rewrite, var_counter)
     recur = [{:var, var_ctx, recur_counter}]
 
     # Change what the current variable points to. In case we infer a type for
@@ -634,34 +640,26 @@ defmodule Types do
     # be recursive types. Therefore we use the intersection operator described in
     # "What are principal typings and what are they good for?", Trevor Jim (1996)
     state =
-      %{state | vars: Map.put(vars, var_ctx, recur),
-                counter: recur_counter + 1,
-                inferred: Map.put(inferred, recur_counter, [])}
+      %{state | counter: recur_counter + 1,
+                inferred: Map.put(inferred, recur_counter, []),
+                rewrite: Map.put_new(rewrite, var_counter, {false, recur})}
 
     with {:ok, arg_types, state} <- of(arg, state) do
-      %{inferred: inferred, counter: counter, vars: vars, read: read} = state
-
-      # Revert the original variable unless it was reassigned.
-      vars =
-        case Map.fetch!(vars, var_ctx) do
-          [{:var, ^var_ctx, ^recur_counter}] ->
-            Map.put(vars, var_ctx, [{:var, var_ctx, var_counter}])
-          _ ->
-            vars
-        end
-
-      return = [{:var, {:return, Elixir}, counter}]
+      %{inferred: inferred, counter: counter, rewrite: rewrite} = state
       recur_types = Map.fetch!(inferred, recur_counter)
 
       {inferred, intersection} =
-        case read do
-          %{^recur_counter => true} when recur_types != [] ->
+        case rewrite do
+          %{^var_counter => {true, _}} when recur_types != [] ->
             {inferred, recur_types}
-          %{^recur_counter => true} ->
+          %{^var_counter => {true, _}} ->
             {inferred, recur}
           %{} ->
             {Map.delete(inferred, recur_counter), nil}
         end
+
+      return = [{:var, {:return, Elixir}, counter}]
+      rewrite = if previous_rewrite, do: rewrite, else: Map.delete(rewrite, var_counter)
 
       types_return_or_error =
         case of_var_apply_unify(var_counter, arg_types, counter, return, arity, inferred, intersection) do
@@ -687,7 +685,7 @@ defmodule Types do
             end
 
           inferred = Map.put(inferred, var_counter, types)
-          ok(return, %{state | inferred: inferred, vars: vars, counter: counter + 1})
+          ok(return, %{state | inferred: inferred, rewrite: rewrite, counter: counter + 1})
       end
     end
   end

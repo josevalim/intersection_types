@@ -373,6 +373,18 @@ defmodule TypesTest do
 
       assert quoted_of((y = fn x -> x end; y.(y))) |> types() ==
              [{:fn, [{[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}], [0]}], 1}]
+
+      assert quoted_of(fn x ->
+        z = (fn y -> y end).(x)
+        x.(z)
+      end) |> types() ==
+        [{:fn, [
+          {[[{:intersection,
+              [{:var, {:x, nil}, 3}],
+              [{:fn, [{[[{:var, {:x, nil}, 3}]], [{:var, {:return, Elixir}, 4}], [4]}], 1}]}]],
+           [{:var, {:return, Elixir}, 4}],
+           [3]}
+        ], 1}]
     end
 
     test "apply with function arguments" do
