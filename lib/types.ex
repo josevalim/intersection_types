@@ -232,9 +232,9 @@ defmodule Types do
       {:subset, subset, type_lvars, type_rvars, acc_rvars} ->
         unify(left, righties, lvars, rvars, type_lvars, type_rvars,
               acc_rvars, lefties, unify_kind(:subset, kind), [subset | matched], [right | unmatched])
-      :error ->
+      :disjoint ->
         unify(left, righties, lvars, rvars, type_lvars, type_rvars,
-              acc_rvars, lefties, :error, matched, [right | unmatched])
+              acc_rvars, lefties, :disjoint, matched, [right | unmatched])
     end
   end
   defp unify(_left, [], _lvars, _rvars,
@@ -243,8 +243,8 @@ defmodule Types do
           type_lvars, type_rvars, acc_rvars, kind, matched)
   end
 
-  defp unify_kind(:error, _), do: :error
-  defp unify_kind(_, :error), do: :error
+  defp unify_kind(:disjoint, _), do: :disjoint
+  defp unify_kind(_, :disjoint), do: :disjoint
   defp unify_kind(:subset, :equal), do: :subset
   defp unify_kind(:equal, :subset), do: :subset
   defp unify_kind(type, type), do: type
@@ -264,7 +264,7 @@ defmodule Types do
            unify_expansion_intersection(clauses, type_rvars) do
       {:equal, right, type_lvars, type_rvars, acc_rvars}
     else
-      _ -> :error
+      _ -> :disjoint
     end
   end
 
@@ -280,18 +280,18 @@ defmodule Types do
            unify_expansion_intersection(clauses, type_lvars) do
       {:equal, right, type_lvars, type_rvars, acc_rvars}
     else
-      _ -> :error
+      _ -> :disjoint
     end
   end
 
   # intersections can only be compared to arrows (functions).
   defp unify_each({:intersection, _, _}, _,
                   _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
-    :error
+    :disjoint
   end
   defp unify_each(_, {:intersection, _, _},
                   _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
-    :error
+    :disjoint
   end
 
   defp unify_each({:var, _, key1} = left, {:var, _, key2} = right,
@@ -361,7 +361,7 @@ defmodule Types do
   end
 
   defp unify_each(_left, _right, _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars),
-    do: :error
+    do: :disjoint
 
   defp unify_var(vars, key, types) do
     case Map.get(vars, key, []) do
@@ -369,7 +369,7 @@ defmodule Types do
         {types, types, []}
       existing ->
         case intersection(existing, types) do
-          {[], _added, _remove} -> :error
+          {[], _added, _remove} -> :disjoint
           {types, added, removed} -> {types, added, removed}
         end
     end
@@ -382,8 +382,8 @@ defmodule Types do
   defp unify_args([left | lefties], [right | righties],
                   lvars, rvars, type_lvars, type_rvars, acc_rvars, acc_kind, acc_matched) do
     case unify(left, right, lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-      {:error, _, _, _, _} ->
-        :error
+      {:disjoint, _, _, _, _} ->
+        :disjoint
       {kind, matched, type_lvars, type_rvars, acc_rvars} ->
         unify_args(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars,
                    unify_kind(kind, acc_kind), [matched | acc_matched])
@@ -405,7 +405,7 @@ defmodule Types do
   defp unify_fn(left_head, left_body, [{right_head, right_body, right_free} | clauses],
                 lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars, matched?) do
     # TODO: matched
-    with {kind, _, temp_lvars, temp_rvars, temp_acc} when kind != :error <-
+    with {kind, _, temp_lvars, temp_rvars, temp_acc} when kind != :disjoint <-
            unify_args(left_head, right_head, lvars, rvars, type_lvars, type_rvars, acc_rvars),
          right_body =
            bind(right_body, temp_rvars, type_rvars),
@@ -426,7 +426,7 @@ defmodule Types do
   end
   defp unify_fn(_, _, [], _lefties, _righties,
                 _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars, false) do
-    :error
+    :disjoint
   end
 
   defp unify_expansion([{head, body, free} | clauses], left_acc, right_acc) do
