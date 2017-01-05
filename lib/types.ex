@@ -284,7 +284,7 @@ defmodule Types do
     end
   end
 
-  # intersections can only be compared to arrows (functions).
+  # Intersections can only be compared to arrows (functions).
   defp unify_each({:intersection, _, _}, _,
                   _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
     :disjoint
@@ -676,18 +676,11 @@ defmodule Types do
     of(expr, @state)
   end
 
-  defp of({var, meta, ctx}, %{vars: vars, rewrite: rewrite} = state)
+  defp of({var, meta, ctx}, %{vars: vars} = state)
        when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
     case Map.fetch(vars, {var, ctx}) do
-      {:ok, [{:var, _, var_counter}] = types} ->
-        case rewrite do
-          %{^var_counter => {_, types}} ->
-            ok(types, put_in(state.rewrite[var_counter], {true, types}))
-          %{} ->
-            ok(types, state)
-        end
       {:ok, types} ->
-        ok(types, state)
+        of_var(types, [], state)
       :error ->
         error(meta, {:unbound_var, var, ctx})
     end
@@ -885,11 +878,7 @@ defmodule Types do
   defp of_fn_apply_each(_clauses, _arg, inferred, [], inferred, acc_body) do
     {:ok, inferred, acc_body}
   end
-  defp of_fn_apply_each([{head, body, free} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
-    {_, bind} = generalize_vars(free, :let)
-    [head] = bind_args(head, bind)
-    body = bind(body, bind)
-
+  defp of_fn_apply_each([{[head], body, _free} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
     with {_, [_ | _] = matched, lvars, _, rvars} <- unify(head, arg, inferred, acc_inferred) do
       acc_body = union(acc_body, bind(body, lvars))
       of_fn_apply_each(clauses, arg, inferred, acc_arg -- matched, rvars, acc_body)
@@ -981,6 +970,34 @@ defmodule Types do
       {:ok, _, state} -> of_block(args, state)
       {:error, _, _} = error -> error
     end
+  end
+
+  ## Vars
+
+  defp of_var([{:var, _, var_counter} = var| types], acc, %{rewrite: rewrite} = state) do
+    case rewrite do
+      %{^var_counter => {_, other}} ->
+        state = put_in(state.rewrite[var_counter], {true, other})
+        of_var(types, other ++ acc, state)
+      %{} ->
+        of_var(types, [var | acc], state)
+    end
+  end
+  defp of_var([{:fn, clauses, arity} | types], acc, %{counter: counter} = state) do
+    {clauses, counter} =
+      Enum.map_reduce(clauses, counter, fn {head, body, free}, counter ->
+        {free, bind} = generalize_vars(free, counter)
+        head = bind_args(head, bind)
+        body = bind(body, bind)
+        {{head, body, free}, counter + 1}
+      end)
+    of_var(types, [{:fn, clauses, arity} | acc], %{state | counter: counter})
+  end
+  defp of_var([type | types], acc, state) do
+    of_var(types, [type | acc], state)
+  end
+  defp of_var([], acc, state) do
+    ok(:lists.reverse(acc), state)
   end
 
   ## Patterns

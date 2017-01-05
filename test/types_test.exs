@@ -367,6 +367,9 @@ defmodule TypesTest do
       assert quoted_of((y = fn x -> x end; y.(y))) |> format() ==
              "(a -> a)"
 
+      assert quoted_of((y = fn x -> x end; {y, y})) |> format() ==
+             "{(a -> a), (b -> b)}"
+
       assert quoted_of(fn x ->
         z = (fn y -> y end).(x)
         x.(z)
@@ -457,8 +460,6 @@ defmodule TypesTest do
       assert quoted_of((fn x -> {x.(x), x.(x)} end).(fn y -> y end)) |> format() ==
              "{(a -> a), (b -> b)}"
 
-      # TODO: Generalize on variable fetching
-      # let z = (\y -> y) in (z, z) :: (t1 -> t1, t -> t)
       # TODO: Provide union and intersection between functions with free vars
       # intersection((t -> t), (a -> a))
 
@@ -473,6 +474,7 @@ defmodule TypesTest do
       #   {x.(z), x.(:foo), z}
       # end)) |> format() == "(:foo -> :baz)"
 
+      # TODO: Provide variable tracking
       # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
       #                  (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
 
