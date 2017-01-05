@@ -308,8 +308,8 @@ defmodule Types do
           {:equal,
            right,
            type_lvars,
-           Map.update(type_rvars, key2, types, &((&1 -- removed) ++ added)),
-           Map.update(acc_rvars, key2, types, &((&1 -- removed) ++ added))}
+           Map.update(type_rvars, key2, types, &((&1 -- removed) |> union(added))),
+           Map.update(acc_rvars, key2, types, &((&1 -- removed) |> union(added)))}
         end
     end
   end
@@ -319,7 +319,7 @@ defmodule Types do
     with {types, added, removed} <- unify_var(lvars, key, [right]) do
       {:equal,
        right,
-       Map.update(type_lvars, key, types, &((&1 -- removed) ++ added)),
+       Map.update(type_lvars, key, types, &((&1 -- removed) |> union(added))),
        type_rvars,
        acc_rvars}
     end
@@ -331,8 +331,8 @@ defmodule Types do
       {:equal,
        right,
        type_lvars,
-       Map.update(type_rvars, key, types, &((&1 -- removed) ++ added)),
-       Map.update(acc_rvars, key, types, &((&1 -- removed) ++ added))}
+       Map.update(type_rvars, key, types, &((&1 -- removed) |> union(added))),
+       Map.update(acc_rvars, key, types, &((&1 -- removed) |> union(added)))}
     end
   end
 

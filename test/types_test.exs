@@ -318,6 +318,10 @@ defmodule TypesTest do
         {a, b, c}
       end) |> format() == "(false -> {false, false, false})"
 
+      assert quoted_of(fn x ->
+        (fn :foo -> :bar; y :: atom() -> :baz end).(x)
+      end) |> format() == "(atom() -> :bar | :baz)"
+
       assert quoted_of(fn x :: atom() ->
         (fn :foo -> :bar; y :: atom() -> :baz end).(x)
       end) |> format() == "(atom() -> :bar | :baz)"
