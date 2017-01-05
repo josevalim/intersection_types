@@ -3,6 +3,89 @@ defmodule Types do
   Type inference and checking for Elixir.
   """
 
+  alias Inspect.Algebra, as: A
+
+  @doc """
+  Convert the types AST to an algebra document.
+  """
+  def types_to_algebra(types) do
+    types_to_algebra(types, %{counter: 0, vars: %{}}) |> elem(0)
+  end
+
+  defp types_to_algebra(types, state) do
+    {types, state} = Enum.map_reduce(types, state, &type_to_algebra/2)
+    {A.group(A.fold_doc(types, &A.glue(A.concat(&1, " |"), &2))), state}
+  end
+
+  # {:value, val}
+  # {:fn, [clauses], arity}
+  # {:tuple, args, arity}
+  # {:var, var_ctx, var_key}
+  # {:intersection, left, right} (appears only on the left side)
+  # :integer
+  # :atom
+
+  defp type_to_algebra({:value, val}, state) do
+    {inspect(val), state}
+  end
+  defp type_to_algebra({:tuple, args, _arity}, state) do
+    {args, state} = args_to_algebra(args, state)
+    {A.surround("{", args, "}"), state}
+  end
+  defp type_to_algebra({:fn, clauses, _arity}, state) do
+    {clauses, state} = clauses_to_algebra(clauses, state)
+    {A.surround("(", clauses, ")"), state}
+  end
+  defp type_to_algebra({:var, _, var_counter}, %{vars: vars, counter: counter} = state) do
+    case vars do
+      %{^var_counter => letter} ->
+        {letter, state}
+      %{} ->
+        letter = counter_to_letter(counter)
+        vars = Map.put(vars, var_counter, letter)
+        {letter, %{state | vars: vars, counter: counter + 1}}
+    end
+  end
+  defp type_to_algebra({:intersection, left, right}, state) do
+    {left_doc, state} = types_to_algebra(left, state)
+    {right_doc, state} = types_to_algebra(right, state)
+    left = maybe_surround(left_doc, left)
+    right = maybe_surround(right_doc, right)
+    {A.glue(A.concat(left, " ^^^"), right), state}
+  end
+
+  defp type_to_algebra(:atom, state), do: {"atom()", state}
+  defp type_to_algebra(:integer, state), do: {"integer()", state}
+  
+  defp args_to_algebra(args, state) do
+    {args, state} = Enum.map_reduce(args, state, &types_to_algebra/2)
+    {A.fold_doc(args, &A.glue(A.concat(&1, ","), &2)), state}
+  end
+
+  defp clauses_to_algebra(clauses, state) do
+    {clauses, state} =
+      Enum.map_reduce(clauses, state, fn {head, body, _}, state ->
+        {head, state} = args_to_algebra(head, state)
+        {body, state} = types_to_algebra(body, state)
+        {A.nest(A.glue(A.concat(head, " ->"), body), 2), state}
+      end)
+    {A.fold_doc(clauses, &A.glue(A.concat(&1, ";"), &2)), state}
+  end
+
+  defp maybe_surround(doc, [_]), do: doc
+  defp maybe_surround(doc, _), do: A.surround("(", doc, ")")
+
+  defp counter_to_letter(counter) do
+    div = div(counter, 26)
+    rem = rem(counter, 26)
+
+    if div > 0 do
+      <<?a + rem, counter_to_letter(div) :: binary>>
+    else
+      <<?a + rem>>
+    end
+  end
+
   ## Patterns
   # 1. adding types/patterns to receive
   # 2. mixing typed with non-typed
@@ -70,19 +153,19 @@ defmodule Types do
   @doc """
   Converts the given Type AST to its inner type.
   """
-  def ast_to_type(ast, state \\ @state)
+  def ast_to_types(ast, state \\ @state)
 
-  def ast_to_type({:boolean, _, []}, state) do
+  def ast_to_types({:boolean, _, []}, state) do
     ok([{:value, true}, {:value, false}], state)
   end
-  def ast_to_type({:integer, _, []}, state) do
+  def ast_to_types({:integer, _, []}, state) do
     ok([:integer], state)
   end
-  def ast_to_type({:atom, _, []}, state) do
+  def ast_to_types({:atom, _, []}, state) do
     ok([:atom], state)
   end
-  def ast_to_type(other, state) do
-    literal(other, state, &ast_to_type/2)
+  def ast_to_types(other, state) do
+    literal(other, state, &ast_to_types/2)
   end
 
   @doc """
@@ -865,7 +948,7 @@ defmodule Types do
 
   defp of_pattern_each({:::, meta, [{var, _, ctx}, type_ast]}, state)
        when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
-    with {:ok, type, state} <- ast_to_type(type_ast, state) do
+    with {:ok, type, state} <- ast_to_types(type_ast, state) do
       of_pattern_bound_var(meta, {var, ctx}, type, state)
     end
   end

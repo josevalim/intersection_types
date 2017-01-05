@@ -5,49 +5,57 @@ defmodule TypesTest do
     Types.bind(types, inferred)
   end
 
-  defmacro quoted_ast_to_type(ast) do
+  defp format({:ok, types, %{inferred: inferred}}) do
+    types
+    |> Types.bind(inferred)
+    |> Types.types_to_algebra()
+    |> Inspect.Algebra.format(:infinity)
+    |> IO.iodata_to_binary()
+  end
+
+  defmacro quoted_ast_to_types(ast) do
     quote do
-      Types.ast_to_type(unquote(Macro.escape(ast)))
+      Types.ast_to_types(unquote(Macro.escape(ast)))
     end
   end
 
-  describe "ast_to_type/1" do
+  describe "ast_to_types/1" do
     test "built-ins" do
-      assert quoted_ast_to_type(boolean()) |> types() ==
+      assert quoted_ast_to_types(boolean()) |> types() ==
              [{:value, true}, {:value, false}]
     end
 
     test "base types" do
-      assert quoted_ast_to_type(atom()) |> types() ==
+      assert quoted_ast_to_types(atom()) |> types() ==
              [:atom]
-      assert quoted_ast_to_type(integer()) |> types() ==
+      assert quoted_ast_to_types(integer()) |> types() ==
              [:integer]
     end
 
     test "values" do
-      assert quoted_ast_to_type(:foo) |> types() ==
+      assert quoted_ast_to_types(:foo) |> types() ==
              [{:value, :foo}]
-      assert quoted_ast_to_type(true) |> types() ==
+      assert quoted_ast_to_types(true) |> types() ==
              [{:value, true}]
-      assert quoted_ast_to_type(false) |> types() ==
+      assert quoted_ast_to_types(false) |> types() ==
              [{:value, false}]
     end
 
     test "literals" do
-      assert quoted_ast_to_type(1) |> types() == [:integer]
+      assert quoted_ast_to_types(1) |> types() == [:integer]
     end
 
     test "tuples" do
-      assert quoted_ast_to_type({}) |> types() ==
+      assert quoted_ast_to_types({}) |> types() ==
              [{:tuple, [], 0}]
-      assert quoted_ast_to_type({:ok, atom()}) |> types() ==
+      assert quoted_ast_to_types({:ok, atom()}) |> types() ==
              [{:tuple, [[{:value, :ok}], [:atom]], 2}]
     end
   end
 
   defmacro quoted_union(left, right) do
-    with {:ok, left, _} <- Types.ast_to_type(left),
-         {:ok, right, _} <- Types.ast_to_type(right) do
+    with {:ok, left, _} <- Types.ast_to_types(left),
+         {:ok, right, _} <- Types.ast_to_types(right) do
       quote do
         Types.union(unquote(Macro.escape(left)),
                     unquote(Macro.escape(right))) |> Enum.sort()
@@ -55,8 +63,8 @@ defmodule TypesTest do
     else
       _ ->
         quote do
-          assert {:ok, _, _} = Types.ast_to_type(unquote(Macro.escape(left)))
-          assert {:ok, _, _} = Types.ast_to_type(unquote(Macro.escape(right)))
+          assert {:ok, _, _} = Types.ast_to_types(unquote(Macro.escape(left)))
+          assert {:ok, _, _} = Types.ast_to_types(unquote(Macro.escape(right)))
         end
     end
   end
@@ -108,8 +116,8 @@ defmodule TypesTest do
   end
 
   defmacro quoted_intersection(left, right) do
-    with {:ok, left, _} <- Types.ast_to_type(left),
-         {:ok, right, _} <- Types.ast_to_type(right) do
+    with {:ok, left, _} <- Types.ast_to_types(left),
+         {:ok, right, _} <- Types.ast_to_types(right) do
       quote do
         Types.intersection(unquote(Macro.escape(left)),
                            unquote(Macro.escape(right)))
@@ -117,8 +125,8 @@ defmodule TypesTest do
     else
       _ ->
         quote do
-          assert {:ok, _, _} = Types.ast_to_type(unquote(Macro.escape(left)))
-          assert {:ok, _, _} = Types.ast_to_type(unquote(Macro.escape(right)))
+          assert {:ok, _, _} = Types.ast_to_types(unquote(Macro.escape(left)))
+          assert {:ok, _, _} = Types.ast_to_types(unquote(Macro.escape(right)))
         end
     end
   end
@@ -201,18 +209,27 @@ defmodule TypesTest do
 
   describe "of/1" do
     test "atoms" do
-      assert quoted_of(nil) |> types() == [{:value, nil}]
-      assert quoted_of(:foo) |> types() == [{:value, :foo}]
-      assert quoted_of(true) |> types() == [{:value, true}]
-      assert quoted_of(false) |> types() == [{:value, false}]
+      assert quoted_of(nil) |> format() == "nil"
+      assert quoted_of(:foo) |> format() == ":foo"
+      assert quoted_of(true) |> format() == "true"
+      assert quoted_of(false) |> format() == "false"
+    end
+
+    test "tuples" do
+      assert quoted_of({:ok, :error}) |> format() == "{:ok, :error}"
+    end
+
+    test "match" do
+      assert {:error, _, {:disjoint_match, _, _}} =
+               quoted_of({:ok, a :: atom()} = {:ok, 0})
     end
 
     test "apply" do
-      assert quoted_of((fn false -> true; true -> false end).(false)) |> types() ==
-             [{:value, true}]
+      assert quoted_of((fn false -> true; true -> false end).(false)) |> format() ==
+             "true"
 
-      assert quoted_of((fn false -> true; true -> false end).(true)) |> types() ==
-             [{:value, false}]
+      assert quoted_of((fn false -> true; true -> false end).(true)) |> format() ==
+             "false"
 
       assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of(fn x :: boolean() ->
@@ -221,17 +238,11 @@ defmodule TypesTest do
     end
 
     test "apply with inference" do
-      assert quoted_of(fn x ->
-        (fn y -> y end).(x)
-      end) |> types() ==
-        [{:fn, [
-          {[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}], [0]}
-        ], 1}]
+      assert quoted_of(fn x -> (fn y -> y end).(x) end) |> format() ==
+             "(a -> a)"
 
-      assert quoted_of((fn y -> y end).(fn x -> x end)) |> types() ==
-        [{:fn, [
-          {[[{:var, {:x, nil}, 1}]], [{:var, {:x, nil}, 1}], [1]}
-        ], 1}]
+      assert quoted_of((fn y -> y end).(fn x -> x end)) |> format() ==
+             "(a -> a)"
 
       assert quoted_of(fn x ->
         (fn true -> true end).(x)
@@ -239,10 +250,7 @@ defmodule TypesTest do
           (fn true -> true end).(z)
           z
         end).(x)
-      end) |> types() ==
-        [{:fn, [
-          {[[value: true]], [value: true], []}
-        ], 1}]
+      end) |> format() == "(true -> true)"
 
       assert quoted_of(fn x ->
         (fn y :: boolean() -> y end).(x)
@@ -250,10 +258,7 @@ defmodule TypesTest do
           (fn true -> true end).(z)
           z
         end).(x)
-      end) |> types() ==
-        [{:fn, [
-          {[[value: true]], [value: true], []}
-        ], 1}]
+      end) |> format() == "(true -> true)"
 
       assert {:error, _, {:disjoint_match, _, _}} =
         quoted_of(fn x ->
@@ -278,65 +283,45 @@ defmodule TypesTest do
       assert quoted_of(fn x ->
         (fn true -> true; false -> false end).(x)
         (fn false -> false end).(x)
-      end) |> types() ==
-        [{:fn, [{[[value: false]], [value: false], []}], 1}]
+      end) |> format() == "(false -> false)"
 
       assert quoted_of(fn x ->
         (fn false -> false end).(x)
         (fn true -> true; false -> false end).(x)
-      end) |> types() ==
-        [{:fn, [{[[value: false]], [value: false], []}], 1}]
+      end) |> format() == "(false -> false)"
 
       assert quoted_of(fn x ->
         (fn false -> false; nil -> nil; _ -> true end).(x)
-      end) |> types() ==
-        [{:fn, [
-          {[[{:var, {:x, nil}, 0}]], [{:value, false}, {:value, nil}, {:value, true}], [0]}
-        ], 1}]
+      end) |> format() == "(a -> false | nil | true)"
 
       assert quoted_of(fn x ->
         a = (fn false -> false; nil -> nil; _ -> true end).(x)
         b = (fn y -> y end).(x)
         c = x
         {a, b, c}
-      end) |> types() ==
-        [{:fn, [
-          {[[{:var, {:x, nil}, 0}]],
-           [{:tuple, [[value: false, value: nil, value: true], [{:var, {:x, nil}, 0}], [{:var, {:x, nil}, 0}]], 3}],
-           [0]}
-        ], 1}]
+      end) |> format() == "(a -> {false | nil | true, a, a})"
 
       assert quoted_of(fn x ->
         a = (fn true -> false; y -> y end).(x)
         b = (fn z -> z end).(x)
         c = x
         {a, b, c}
-      end) |> types() ==
-        [{:fn, [
-          {[[{:var, {:x, nil}, 0}]],
-           [{:tuple, [[{:value, false}, {:var, {:x, nil}, 0}], [{:var, {:x, nil}, 0}], [{:var, {:x, nil}, 0}]], 3}],
-           [0]}
-        ], 1}]
+      end) |> format() == "(a -> {false | a, a, a})"
 
       assert quoted_of(fn x ->
         a = (fn true -> false; y -> y end).(x)
         b = (fn false -> false end).(x)
         c = x
         {a, b, c}
-      end) |> types() ==
-        [{:fn, [
-          {[[{:value, false}]],
-           [{:tuple, [[{:value, false}], [{:value, false}], [{:value, false}]], 3}],
-           []}
-        ], 1}]
+      end) |> format() == "(false -> {false, false, false})"
     end
 
     test "apply with closure" do
-      assert quoted_of((fn x -> (fn y -> x end) end).(true)) |> types() ==
-             [{:fn, [{[[{:var, {:y, nil}, 1}]], [value: true], [1]}], 1}]
+      assert quoted_of((fn x -> (fn y -> x end) end).(true)) |> format() ==
+             "(a -> true)"
 
-      assert quoted_of((fn x -> (fn y -> x end) end).(true).(:foo)) |> types() ==
-             [{:value, true}]
+      assert quoted_of((fn x -> (fn y -> x end) end).(true).(:foo)) |> format() ==
+             "true"
     end
 
     # This test is about let polymorphism.
@@ -356,61 +341,47 @@ defmodule TypesTest do
       assert quoted_of((
           x = fn y -> y end
           x.(:foo)
-        )) |> types() ==
-        [{:value, :foo}]
+        )) |> format() == ":foo"
 
       assert quoted_of((
           x = fn y -> y end
           {x.(:foo), x.(:foo)}
-        )) |> types() ==
-        [{:tuple, [[value: :foo], [value: :foo]], 2}]
+        )) |> format() == "{:foo, :foo}"
 
       assert quoted_of((
           x = fn y -> y end
           {x.(:foo), x.(:bar)}
-        )) |> types() ==
-        [{:tuple, [[value: :foo], [value: :bar]], 2}]
+        )) |> format() == "{:foo, :bar}"
 
-      assert quoted_of((y = fn x -> x end; y.(y))) |> types() ==
-             [{:fn, [{[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}], [0]}], 1}]
+      assert quoted_of((y = fn x -> x end; y.(y))) |> format() ==
+             "(a -> a)"
 
       assert quoted_of(fn x ->
         z = (fn y -> y end).(x)
         x.(z)
-      end) |> types() ==
-        [{:fn, [
-          {[[{:intersection,
-              [{:var, {:x, nil}, 3}],
-              [{:fn, [{[[{:var, {:x, nil}, 3}]], [{:var, {:return, Elixir}, 4}], [4]}], 1}]}]],
-           [{:var, {:return, Elixir}, 4}],
-           [3]}
-        ], 1}]
+      end) |> format() == "(a ^^^ (a -> b) -> b)"
     end
 
     test "apply with function arguments" do
       assert quoted_of((fn x ->
           x.(:foo)
-        end).(fn y -> y end)) |> types() ==
-        [{:value, :foo}]
+        end).(fn y -> y end)) |> format() == ":foo"
 
       assert quoted_of((fn x ->
           {x.(:foo), x.(:bar)}
         end).(fn y -> y end)
-      ) |> types() ==
-        [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
+      ) |> format() == "{:foo, :bar}"
 
       # Same clauses
       assert quoted_of((fn x ->
           {x.(:foo), x.(:bar)}
         end).(fn :foo -> :x; :bar -> :y end)
-      ) |> types() ==
-        [{:tuple, [[{:value, :x}], [{:value, :y}]], 2}]
+      ) |> format() == "{:x, :y}"
 
       # More clauses
       assert quoted_of((fn x ->
           {x.(:foo), x.(:bar)}
-        end).(fn :foo -> :x; :bar -> :y; :baz -> :z end)) |> types() ==
-        [{:tuple, [[{:value, :x}], [{:value, :y}]], 2}]
+        end).(fn :foo -> :x; :bar -> :y; :baz -> :z end)) |> format() == "{:x, :y}"
 
       # Less clauses
       assert {:error, _, {:disjoint_apply, _, _, _}} =
@@ -422,8 +393,7 @@ defmodule TypesTest do
       assert quoted_of((
         c = fn y -> y end
         (fn x -> {x.(:foo), x.(:bar)} end).(c)
-        c)) |> types() ==
-        [{:fn, [{[[{:var, {:y, nil}, 0}]], [{:var, {:y, nil}, 0}], [0]}], 1}]
+        c)) |> format() == "(a -> a)"
     end
 
     test "apply with function arguments and free variables" do
@@ -433,15 +403,13 @@ defmodule TypesTest do
         a = (fn x -> {x.(:foo), x.(:bar)} end).(fn y -> z end)
         (fn true -> true end).(z)
         a
-      end) |> types() ==
-        [{:fn, [{[[{:value, true}]], [{:tuple, [[value: true], [value: true]], 2}], []}], 1}]
+      end) |> format() == "(true -> {true, true})"
 
       # z must be nil
       assert quoted_of(fn z ->
         (fn x -> nil = x.(:any) end).(fn y -> z end)
         z
-      end) |> types() ==
-        [{:fn, [{[[value: nil]], [{:value, nil}], []}], 1}]
+      end) |> format() == "(nil -> nil)"
 
       # z conflicts with external value
       assert {:error, _, {:disjoint_apply, _, _, _}} =
@@ -467,72 +435,46 @@ defmodule TypesTest do
     test "apply with rank-2 function argument" do
       # Case extracted from
       # What are principal typings and what are they good for?
-      assert quoted_of((fn x -> x.(x) end).(fn y -> y end)) |> types() ==
-             [{:fn, [
-               {[[{:var, {:gen, Elixir}, {:left, 3}}]],
-                [{:var, {:gen, Elixir}, {:left, 3}}],
-                [left: 3]}
-             ], 1}]
+      assert quoted_of((fn x -> x.(x) end).(fn y -> y end)) |> format() ==
+             "(a -> a)"
 
-      assert quoted_of((fn x -> {x.(x), x.(x)} end).(fn y -> y end)) |> types() ==
-             [{:tuple,
-              [[{:fn, [
-                {[[{:var, {:gen, Elixir}, {:left, {:right, 5}}}]],
-                 [{:var, {:gen, Elixir}, {:left, {:right, 5}}}],
-                 [left: {:right, 5}]}
-              ], 1}],
-              [{:fn, [
-                {[[{:var, {:gen, Elixir}, {:left, 5}}]],
-                 [{:var, {:gen, Elixir}, {:left, 5}}],
-                 [left: 5]}
-              ], 1}]],
-              2}]
-    end
+      # TODO: This is wrong. It should be {(a -> a), (a -> a)}.
+      # assert quoted_of((fn x -> {x.(x), x.(x)} end).(fn y -> y end)) |> format() ==
+      #        "{(a -> a), (a -> a)}"
 
-    test "match" do
-      assert {:error, _, {:disjoint_match, _, _}} =
-               quoted_of({:ok, a :: atom()} = {:ok, 0})
-    end
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
 
-    test "tuples" do
-      assert quoted_of({:ok, :error}) |> types() ==
-             [{:tuple, [[{:value, :ok}], [{:value, :error}]], 2}]
+      # TODO: This is wrong. It should type check.
+      # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+      #                  (fn :bar -> :baz; :foo -> :bar end)) |> format() == "(:foo -> :baz)"
     end
   end
 
   describe "of/1 with variable tracking" do
     test "tuples" do
-      assert quoted_of(({x = :ok, y = :error}; y)) |> types() ==
-             [{:value, :error}]
+      assert quoted_of(({x = :ok, y = :error}; y)) |> format() == ":error"
     end
 
     test "blocks" do
-      assert quoted_of((a = :ok; b = a; b)) |> types() ==
-             [{:value, :ok}]
+      assert quoted_of((a = :ok; b = a; b)) |> format() == ":ok"
     end
 
     test "pattern matching" do
-      assert quoted_of((a = (a = true; b = false); a)) |> types() ==
-             [{:value, false}]
+      assert quoted_of((a = (a = true; b = false); a)) |> format() == "false"
     end
   end
 
   describe "of/1 fns" do
     test "patterns" do
-      assert quoted_of(fn x -> x end) |> types() ==
-             [{:fn, [
-               {[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}], [0]}
-             ], 1}]
+      assert quoted_of(fn x -> x end) |> format() ==
+             "(a -> a)"
 
-      assert quoted_of(fn {x :: integer(), x} -> x end) |> types() ==
-             [{:fn, [
-               {[[{:tuple, [[:integer], [:integer]], 2}]], [:integer], []}
-             ], 1}]
+      assert quoted_of(fn {x :: integer(), x} -> x end) |> format() ==
+             "({integer(), integer()} -> integer())"
 
-      assert quoted_of(fn {x :: integer(), x :: integer()} -> x end) |> types() ==
-             [{:fn, [
-               {[[{:tuple, [[:integer], [:integer]], 2}]], [:integer], []}
-             ], 1}]
+      assert quoted_of(fn {x :: integer(), x :: integer()} -> x end) |> format() ==
+             "({integer(), integer()} -> integer())"
 
       assert {:error, _, {:bound_var, _, _, _}} =
              quoted_of(fn {x, x :: boolean()} -> x end)
@@ -546,138 +488,62 @@ defmodule TypesTest do
         z = x
         (fn 0 -> 0 end).(x) # TODO: This should emit a warning for being non-exaustive.
         z
-      end) |> types() == [{:fn, [{[[:integer]], [:integer], []}], 1}]
+      end) |> format() == "(integer() -> integer())"
     end
 
     test "bidirectional matching" do
       assert quoted_of(fn z ->
         {:ok, x} = (fn y -> {y, :error} end).(z)
         {z, x}
-      end) |> types() ==
-        [{:fn, [
-          {[[value: :ok]], [{:tuple, [[value: :ok], [value: :error]], 2}], []}
-        ], 1}]
+      end) |> format() == "(:ok -> {:ok, :error})"
 
       assert quoted_of(fn z ->
         {:ok, x} = (fn y -> {y, :error} end).(z)
-      end) |> types() ==
-        [{:fn, [
-          {[[value: :ok]], [{:tuple, [[value: :ok], [value: :error]], 2}], []}
-        ], 1}]
+      end) |> format() == "(:ok -> {:ok, :error})"
     end
 
     test "bidirectional matching with multiple clauses" do
       assert quoted_of(fn z ->
         {x, y} = (fn true -> {true, :foo}; false -> {false, :bar} end).(z)
         {y, x}
-      end) |> types() ==
-        [{:fn, [
-          {[[value: true, value: false]],
-           [{:tuple, [[value: :foo, value: :bar], [value: true, value: false]], 2}
-        ], []}], 1}]
+      end) |> format() == "(true | false -> {:foo | :bar, true | false})"
     end
 
     test "free variables" do
-      assert quoted_of(fn x -> x end) |> types() ==
-             [{:fn, [
-               {[[{:var, {:x, nil}, 0}]], [{:var, {:x, nil}, 0}], [0]}
-             ], 1}]
+      assert quoted_of(fn x -> x end) |> format() ==
+             "(a -> a)"
 
-      assert quoted_of(fn x -> fn y -> y end end) |> types() ==
-             [{:fn, [
-               {[[{:var, {:x, nil}, 0}]],
-                [{:fn, [
-                  {[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], [1]}
-                ], 1}], [0]}
-             ], 1}]
+      assert quoted_of(fn x -> fn y -> y end end) |> format() ==
+             "(a -> (b -> b))"
 
-      assert quoted_of(fn x -> fn y -> x end end) |> types() ==
-             [{:fn, [
-               {[[{:var, {:x, nil}, 0}]],
-                [{:fn, [
-                  {[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 0}], [1]}
-                ], 1}], [0]}
-             ], 1}]
+      assert quoted_of(fn x -> fn y -> x end end) |> format() ==
+             "(a -> (b -> a))"
     end
 
     test "rank 2 inference" do
-      assert quoted_of(fn x -> {x.(:foo), x.(:foo)} end) |> types() ==
-             [{:fn, [
-               {[[{:fn, [
-                 {[[value: :foo]], [{:var, {:return, Elixir}, 2}], [2]}
-               ], 1}]],
-               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 2}]], 2}], []}
-             ], 1}]
+      assert quoted_of(fn x -> {x.(:foo), x.(:foo)} end) |> format() ==
+             "((:foo -> a) -> {a, a})"
 
-      assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> types() ==
-             [{:fn, [
-               {[[{:fn, [
-                 {[[value: :bar]], [{:var, {:return, Elixir}, 4}], [4]},
-                 {[[value: :foo]], [{:var, {:return, Elixir}, 2}], [2]}
-               ], 1}]],
-               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 4}]], 2}], []}
-             ], 1}]
+      assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> format() ==
+             "((:bar -> a; :foo -> b) -> {b, a})"
 
-      assert quoted_of(fn x -> x.(x) end) |> types() ==
-             [{:fn, [
-               {[[{:intersection,
-                 [{:var, {:x, nil}, 1}],
-                 [{:fn, [{[[{:var, {:x, nil}, 1}]], [{:var, {:return, Elixir}, 2}], [2]}], 1}]
-                }]],
-                [{:var, {:return, Elixir}, 2}], [1]}
-             ], 1}]
+      assert quoted_of(fn x -> x.(x) end) |> format() ==
+             "(a ^^^ (a -> b) -> b)"
 
-      assert quoted_of(fn x -> x.({:ok, x}) end) |> types() ==
-             [{:fn, [
-               {[[{:intersection,
-                 [{:var, {:x, nil}, 1}],
-                 [{:fn, [{[[{:tuple, [[{:value, :ok}], [{:var, {:x, nil}, 1}]], 2}]], [{:var, {:return, Elixir}, 2}], [2]}], 1}]
-                }]],
-                [{:var, {:return, Elixir}, 2}], [1]}
-             ], 1}]
+      assert quoted_of(fn x -> x.({:ok, x}) end) |> format() ==
+             "(a ^^^ ({:ok, a} -> b) -> b)"
 
-      assert quoted_of(fn x -> x.(fn y -> y end) end) |> types() ==
-             [{:fn, [
-              {[[{:fn, [
-                {[[{:fn, [
-                  {[[{:var, {:y, nil}, 2}]], [{:var, {:y, nil}, 2}], [2]}], 1}
-                 ]],
-                 [{:var, {:return, Elixir}, 3}], [3]}
-               ], 1}]], [{:var, {:return, Elixir}, 3}], []}
-             ], 1}]
+      assert quoted_of(fn x -> x.(fn y -> y end) end) |> format() ==
+             "(((a -> a) -> b) -> b)"
 
-      assert quoted_of(fn x -> {x.(x), x.(:foo)} end) |> types() ==
-             [{:fn, [
-              {[[{:intersection,
-                  [{:var, {:x, nil}, 1}],
-                  [{:fn, [
-                    {[[value: :foo]], [{:var, {:return, Elixir}, 4}], [4]},
-                    {[[{:var, {:x, nil}, 1}]], [{:var, {:return, Elixir}, 2}], [2]}
-                  ], 1}]}]],
-               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 4}]], 2}],
-               [1]}
-              ], 1}]
+      assert quoted_of(fn x -> {x.(x), x.(:foo)} end) |> format() ==
+             "(a ^^^ (:foo -> b; a -> c) -> {c, b})"
 
-      assert quoted_of(fn x -> {x.(:foo), x.(x)} end) |> types() ==
-             [{:fn, [
-              {[[{:intersection,
-                  [{:var, {:x, nil}, 3}],
-                  [{:fn, [
-                    {[[{:var, {:x, nil}, 3}]], [{:var, {:return, Elixir}, 4}], [4]},
-                    {[[value: :foo]], [{:var, {:return, Elixir}, 2}], [2]}
-                  ], 1}]}]],
-               [{:tuple, [[{:var, {:return, Elixir}, 2}], [{:var, {:return, Elixir}, 4}]], 2}],
-               [3]}
-              ], 1}]
+      assert quoted_of(fn x -> {x.(:foo), x.(x)} end) |> format() ==
+             "(a ^^^ (a -> b; :foo -> c) -> {c, b})"
 
-      assert quoted_of(fn a -> fn b -> a.(a.(b)) end end) |> types() ==
-             [{:fn, [
-               {[[{:intersection,
-                 [{:fn, [{[[{:var, {:b, nil}, 1}]], [{:var, {:return, Elixir}, 4}], [4]}], 1}],
-                 [{:fn, [{[[{:var, {:return, Elixir}, 4}]], [{:var, {:return, Elixir}, 5}], [5]}], 1}]}]],
-                [{:fn, [{[[{:var, {:b, nil}, 1}]], [{:var, {:return, Elixir}, 5}], [1]}], 1}],
-                []}
-             ], 1}]
+      assert quoted_of(fn x -> fn y -> x.(x.(y)) end end) |> format() ==
+             "((a -> b) ^^^ (b -> c) -> (a -> c))"
 
       assert {:error, _, :rank2_restricted} =
                quoted_of((fn x -> x.(fn y -> y.(y) end) end))
