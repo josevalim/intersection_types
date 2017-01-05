@@ -206,34 +206,227 @@ defmodule Types do
   """
   # TODO: Include error reason every time unification fails.
   def unify(left, right, rvars, acc_rvars) do
-    unify(left, right, %{}, rvars, %{}, rvars, acc_rvars, [])
+    unify(left, right, %{}, rvars, %{}, rvars, acc_rvars)
+  end
+
+  defp unify(left, right, lvars, rvars, temp_lvars, temp_rvars, acc_rvars) do
+    unify(left, right, lvars, rvars, temp_lvars, temp_rvars, acc_rvars, :equal, [])
   end
 
   defp unify([left | lefties], righties, lvars, rvars,
-             type_lvars, type_rvars, acc_rvars, matched) do
+             type_lvars, type_rvars, acc_rvars, kind, matched) do
     unify(left, righties, lvars, rvars, type_lvars, type_rvars,
-          acc_rvars, lefties, matched, [])
+          acc_rvars, lefties, kind, matched, [])
   end
-  defp unify([], unmatched, _lvars, _rvars,
-             type_lvars, type_rvars, acc_rvars, matched) do
-    {type_lvars, type_rvars, acc_rvars, matched, unmatched}
+  defp unify([], _righties, _lvars, _rvars,
+             type_lvars, type_rvars, acc_rvars, kind, matched) do
+    {kind, matched, type_lvars, type_rvars, acc_rvars}
   end
 
   defp unify(left, [right | righties], lvars, rvars, type_lvars, type_rvars,
-             acc_rvars, lefties, matched, unmatched) do
+             acc_rvars, lefties, kind, matched, unmatched) do
     case unify_each(left, right, lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-      {type_lvars, type_rvars, acc_rvars} ->
+      {:equal, _equal, type_lvars, type_rvars, acc_rvars} ->
         unify(left, righties, lvars, rvars, type_lvars, type_rvars,
-              acc_rvars, lefties, [right | matched], unmatched)
+              acc_rvars, lefties, kind, [right | matched], unmatched)
+      {:subset, subset, type_lvars, type_rvars, acc_rvars} ->
+        unify(left, righties, lvars, rvars, type_lvars, type_rvars,
+              acc_rvars, lefties, unify_kind(:subset, kind), [subset | matched], [right | unmatched])
       :error ->
         unify(left, righties, lvars, rvars, type_lvars, type_rvars,
-              acc_rvars, lefties, matched, [right | unmatched])
+              acc_rvars, lefties, :error, matched, [right | unmatched])
     end
   end
   defp unify(_left, [], _lvars, _rvars,
-             type_lvars, type_rvars, acc_rvars, lefties, matched, righties) do
+             type_lvars, type_rvars, acc_rvars, lefties, kind, matched, righties) do
     unify(lefties, righties, type_lvars, type_rvars,
-          type_lvars, type_rvars, acc_rvars, matched)
+          type_lvars, type_rvars, acc_rvars, kind, matched)
+  end
+
+  defp unify_kind(:error, _), do: :error
+  defp unify_kind(_, :error), do: :error
+  defp unify_kind(:subset, :equal), do: :subset
+  defp unify_kind(:equal, :subset), do: :subset
+  defp unify_kind(type, type), do: type
+
+  # Once an intersection is found, we need to solve it by expanding
+  # the function into an intersection as described in:
+  # "Expansion: the Crucial Mechanism for Type Inference with Intersection Types"
+  # Sébastien Carlier, J. B. Wells (2005)
+  defp unify_each({:intersection, inter_left, inter_right}, {:fn, clauses, arity} = right,
+                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    {left_clauses, right_clauses} = unify_expansion(clauses, [], [])
+    with {:equal, _, type_lvars, type_rvars, acc_rvars} <-
+           unify(inter_left, [{:fn, left_clauses, arity}], lvars, rvars, type_lvars, type_rvars, acc_rvars),
+         {:equal, _, type_lvars, type_rvars, acc_rvars} <-
+           unify(inter_right, [{:fn, right_clauses, arity}], type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars),
+         {:ok, type_rvars} <-
+           unify_expansion_intersection(clauses, type_rvars) do
+      {:equal, right, type_lvars, type_rvars, acc_rvars}
+    else
+      _ -> :error
+    end
+  end
+
+  defp unify_each({:fn, clauses, arity}, {:intersection, inter_left, inter_right} = right,
+                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    {left_clauses, right_clauses} = unify_expansion(clauses, [], [])
+
+    with {:equal, _, type_lvars, type_rvars, acc_rvars} <-
+           unify([{:fn, left_clauses, arity}], inter_left, lvars, rvars, type_lvars, type_rvars, acc_rvars),
+         {:equal, _, type_lvars, type_rvars, acc_rvars} <-
+           unify([{:fn, right_clauses, arity}], inter_right, type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars),
+         {:ok, type_lvars} <-
+           unify_expansion_intersection(clauses, type_lvars) do
+      {:equal, right, type_lvars, type_rvars, acc_rvars}
+    else
+      _ -> :error
+    end
+  end
+
+  # intersections can only be compared to arrows (functions).
+  defp unify_each({:intersection, _, _}, _,
+                  _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
+    :error
+  end
+  defp unify_each(_, {:intersection, _, _},
+                  _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
+    :error
+  end
+
+  defp unify_each({:var, _, key1} = left, {:var, _, key2} = right,
+                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    case Map.get(lvars, key1, []) do
+      [] ->
+        {:equal,
+         right,
+         Map.update(type_lvars, key1, [right], &(&1 ++ [right])),
+         type_rvars,
+         Map.put(acc_rvars, key2, Map.get(type_rvars, key2, []))}
+      _ ->
+        with {types, added, removed} <- unify_var(rvars, key2, [left]) do
+          {:equal,
+           right,
+           type_lvars,
+           Map.update(type_rvars, key2, types, &((&1 -- removed) ++ added)),
+           Map.update(acc_rvars, key2, types, &((&1 -- removed) ++ added))}
+        end
+    end
+  end
+
+  defp unify_each({:var, _, key}, right,
+                  lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
+    with {types, added, removed} <- unify_var(lvars, key, [right]) do
+      {:equal,
+       right,
+       Map.update(type_lvars, key, types, &((&1 -- removed) ++ added)),
+       type_rvars,
+       acc_rvars}
+    end
+  end
+
+  defp unify_each(left, {:var, _, key} = right,
+                  _lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    with {types, added, removed} <- unify_var(rvars, key, [left]) do
+      {:equal,
+       right,
+       type_lvars,
+       Map.update(type_rvars, key, types, &((&1 -- removed) ++ added)),
+       Map.update(acc_rvars, key, types, &((&1 -- removed) ++ added))}
+    end
+  end
+
+  defp unify_each(type, type, _lvars, _rvars, type_lvars, type_rvars, acc_rvars),
+    do: {:equal, type, type_lvars, type_rvars, acc_rvars}
+
+  defp unify_each(:atom, {:value, atom} = right,
+                  _lvars, _rvars, type_lvars, type_rvars, acc_rvars) when is_atom(atom),
+    do: {:equal, right, type_lvars, type_rvars, acc_rvars}
+
+  defp unify_each({:value, atom} = left, :atom,
+                  _lvars, _rvars, type_lvars, type_rvars, acc_rvars) when is_atom(atom),
+    do: {:subset, left, type_lvars, type_rvars, acc_rvars}
+
+  defp unify_each({:fn, lefties, arity}, {:fn, righties, arity},
+                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    unify_fn(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars)
+  end
+
+  defp unify_each({:tuple, lefties, arity}, {:tuple, righties, arity},
+                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    with {kind, args, type_lvars, type_rvars, acc_rvars} <-
+           unify_args(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+      {kind, {:tuple, args, arity}, type_lvars, type_rvars, acc_rvars}
+    end
+  end
+
+  defp unify_each(_left, _right, _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars),
+    do: :error
+
+  defp unify_var(vars, key, types) do
+    case Map.get(vars, key, []) do
+      [] ->
+        {types, types, []}
+      existing ->
+        case intersection(existing, types) do
+          {[], _added, _remove} -> :error
+          {types, added, removed} -> {types, added, removed}
+        end
+    end
+  end
+
+  defp unify_args(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    unify_args(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars, :equal, [])
+  end
+
+  defp unify_args([left | lefties], [right | righties],
+                  lvars, rvars, type_lvars, type_rvars, acc_rvars, acc_kind, acc_matched) do
+    case unify(left, right, lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+      {:error, _, _, _, _} ->
+        :error
+      {kind, matched, type_lvars, type_rvars, acc_rvars} ->
+        unify_args(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars,
+                   unify_kind(kind, acc_kind), [matched | acc_matched])
+    end
+  end
+  defp unify_args([], [], _lvars, _rvars, type_lvars, type_rvars, acc_rvars, kind, acc_matched) do
+    {kind, :lists.reverse(acc_matched), type_lvars, type_rvars, acc_rvars}
+  end
+
+  defp unify_fn([{left_head, left_body, _} | lefties], righties,
+                lvars, rvars, type_lvars, type_rvars, acc_rvars) do
+    unify_fn(left_head, left_body, righties, lefties, righties,
+             lvars, rvars, type_lvars, type_rvars, acc_rvars, false)
+  end
+  defp unify_fn([], righties, _lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
+    {:equal, righties, type_lvars, type_rvars, acc_rvars}
+  end
+
+  defp unify_fn(left_head, left_body, [{right_head, right_body, right_free} | clauses],
+                lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars, matched?) do
+    # TODO: matched
+    with {kind, _, temp_lvars, temp_rvars, temp_acc} when kind != :error <-
+           unify_args(left_head, right_head, lvars, rvars, type_lvars, type_rvars, acc_rvars),
+         right_body =
+           bind(right_body, temp_rvars, type_rvars),
+         {:equal, _, temp_lvars, temp_rvars, temp_acc} <-
+           unify(left_body, right_body, lvars, temp_rvars, temp_lvars, temp_rvars, temp_acc) do
+      type_rvars = Map.drop(temp_rvars, right_free)
+      acc_rvars = Map.drop(temp_acc, right_free)
+      unify_fn(left_head, left_body, clauses, lefties, righties,
+               lvars, rvars, temp_lvars, type_rvars, acc_rvars, true)
+    else
+      _ -> unify_fn(left_head, left_body, clauses, lefties, righties,
+                    lvars, rvars, type_lvars, type_rvars, acc_rvars, matched?)
+    end
+  end
+  defp unify_fn(_, _, [], lefties, righties,
+                lvars, rvars, type_lvars, type_rvars, acc_rvars, true) do
+    unify_fn(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars)
+  end
+  defp unify_fn(_, _, [], _lefties, _righties,
+                _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars, false) do
+    :error
   end
 
   defp unify_expansion([{head, body, free} | clauses], left_acc, right_acc) do
@@ -274,161 +467,6 @@ defmodule Types do
   end
   defp unify_expansion_intersection([], clauses, vars) do
     unify_expansion_intersection(clauses, vars)
-  end
-
-  # Once an intersection is found, we need to solve it by expanding
-  # the function into an intersection as described in:
-  # "Expansion: the Crucial Mechanism for Type Inference with Intersection Types"
-  # Sébastien Carlier, J. B. Wells (2005)
-  defp unify_each({:intersection, inter_left, inter_right}, {:fn, clauses, arity},
-                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    {left_clauses, right_clauses} = unify_expansion(clauses, [], [])
-
-    with {type_lvars, type_rvars, acc_rvars, _, []} <-
-           unify(inter_left, [{:fn, left_clauses, arity}], lvars, rvars, type_lvars, type_rvars, acc_rvars, []),
-         {type_lvars, type_rvars, acc_rvars, _, []} <-
-           unify(inter_right, [{:fn, right_clauses, arity}], type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars, []),
-         {:ok, type_rvars} <-
-           unify_expansion_intersection(clauses, type_rvars) do
-      {type_lvars, type_rvars, acc_rvars}
-    else
-      _ -> :error
-    end
-  end
-
-  defp unify_each({:fn, clauses, arity}, {:intersection, inter_left, inter_right},
-                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    {left_clauses, right_clauses} = unify_expansion(clauses, [], [])
-
-    with {type_lvars, type_rvars, acc_rvars, _, []} <-
-           unify([{:fn, left_clauses, arity}], inter_left, lvars, rvars, type_lvars, type_rvars, acc_rvars, []),
-         {type_lvars, type_rvars, acc_rvars, _, []} <-
-           unify([{:fn, right_clauses, arity}], inter_right, type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars, []),
-         {:ok, type_lvars} <-
-           unify_expansion_intersection(clauses, type_lvars) do
-      {type_lvars, type_rvars, acc_rvars}
-    else
-      _ -> :error
-    end
-  end
-
-  # intersections can only be compared to arrows (functions).
-  defp unify_each({:intersection, _, _}, _,
-                  _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
-    :error
-  end
-  defp unify_each(_, {:intersection, _, _},
-                  _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
-    :error
-  end
-
-  defp unify_each({:var, _, key1} = left, {:var, _, key2} = right,
-                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    case Map.get(lvars, key1, []) do
-      [] ->
-        {Map.update(type_lvars, key1, [right], &(&1 ++ [right])),
-         type_rvars,
-         Map.put(acc_rvars, key2, Map.get(type_rvars, key2, []))}
-      _ ->
-        with {types, added, removed} <- unify_var(rvars, key2, [left]) do
-          {type_lvars,
-           Map.update(type_rvars, key2, types, &((&1 -- removed) ++ added)),
-           Map.update(acc_rvars, key2, types, &((&1 -- removed) ++ added))}
-        end
-    end
-  end
-
-  defp unify_each({:var, _, key}, right,
-                  lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
-    with {types, added, removed} <- unify_var(lvars, key, [right]) do
-      {Map.update(type_lvars, key, types, &((&1 -- removed) ++ added)),
-       type_rvars,
-       acc_rvars}
-    end
-  end
-
-  defp unify_each(left, {:var, _, key},
-                  _lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    with {types, added, removed} <- unify_var(rvars, key, [left]) do
-      {type_lvars,
-       Map.update(type_rvars, key, types, &((&1 -- removed) ++ added)),
-       Map.update(acc_rvars, key, types, &((&1 -- removed) ++ added))}
-    end
-  end
-
-  defp unify_each(type, type, _lvars, _rvars, type_lvars, type_rvars, acc_rvars),
-    do: {type_lvars, type_rvars, acc_rvars}
-
-  defp unify_each(:atom, {:value, atom},
-                  _lvars, _rvars, type_lvars, type_rvars, acc_rvars) when is_atom(atom),
-    do: {type_lvars, type_rvars, acc_rvars}
-
-  defp unify_each({:fn, lefties, arity}, {:fn, righties, arity},
-                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    unify_fn(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars)
-  end
-
-  defp unify_each({:tuple, lefties, arity}, {:tuple, righties, arity},
-                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    unify_args(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars)
-  end
-
-  defp unify_each(_left, _right, _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars),
-    do: :error
-
-  defp unify_var(vars, key, types) do
-    case Map.get(vars, key, []) do
-      [] ->
-        {types, types, []}
-      existing ->
-        case intersection(existing, types) do
-          {[], _added, _remove} -> :error
-          {types, added, removed} -> {types, added, removed}
-        end
-    end
-  end
-
-  defp unify_args([left | lefties], [right | righties],
-                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    case unify(left, right, lvars, rvars, type_lvars, type_rvars, acc_rvars, []) do
-      {type_lvars, type_rvars, acc_rvars, _, []} ->
-        unify_args(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars)
-      {_, _, _, _, _} ->
-        :error
-    end
-  end
-  defp unify_args([], [], _lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
-    {type_lvars, type_rvars, acc_rvars}
-  end
-
-  defp unify_fn([{left_head, left_body, _} | lefties], righties,
-                lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    unify_fn(left_head, left_body, righties, lefties, righties,
-             lvars, rvars, type_lvars, type_rvars, acc_rvars)
-  end
-  defp unify_fn([], _righties, _lvars, _rvars, type_lvars, type_rvars, acc_rvars) do
-    {type_lvars, type_rvars, acc_rvars}
-  end
-
-  defp unify_fn(left_head, left_body, [{right_head, right_body, right_free} | clauses],
-                lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    with {temp_lvars, temp_rvars, temp_acc} <-
-           unify_args(left_head, right_head, lvars, rvars, type_lvars, type_rvars, acc_rvars),
-         right_body =
-           bind(right_body, temp_rvars, type_rvars),
-         {temp_lvars, temp_rvars, temp_acc, _, []} <-
-           unify(left_body, right_body, temp_lvars, temp_rvars, temp_lvars, temp_rvars, temp_acc, []) do
-      type_rvars = Map.drop(temp_rvars, right_free)
-      acc_rvars = Map.drop(temp_acc, right_free)
-      unify_fn(lefties, righties, lvars, rvars, temp_lvars, type_rvars, acc_rvars)
-    else
-      _ -> unify_fn(left_head, left_body, clauses, lefties, righties,
-                    lvars, rvars, type_lvars, type_rvars, acc_rvars)
-    end
-  end
-  defp unify_fn(_, _, [], _lefties, _righties,
-                _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
-    :error
   end
 
   @doc """
@@ -785,7 +823,7 @@ defmodule Types do
         fun = [{:fn, [{[arg], return, [counter]}], arity}]
 
         case unify(fun, existing, inferred, inferred) do
-          {lvars, _, _, [_ | _] = matched, _} ->
+          {_, [_ | _] = matched, lvars, _, _} ->
             {:match, matched, bind(return, lvars)}
           _ ->
             {:nomatch, existing}
@@ -796,19 +834,19 @@ defmodule Types do
   end
 
   defp of_var_apply_clauses(types, arity, clause) do
-    of_var_apply_clauses(types, arity, clause, [], false)
+    of_var_apply_clauses(types, arity, clause, [])
   end
 
-  defp of_var_apply_clauses([type | types], arity, clause, acc, applied?) do
+  defp of_var_apply_clauses([type | types], arity, clause, acc) do
     case of_var_apply_each_clause(type, arity, clause) do
-      {:ok, type} -> of_var_apply_clauses(types, arity, clause, [type | acc], true)
-      :error -> of_var_apply_clauses(types, arity, clause, [type | acc], applied?)
+      {:ok, type} -> of_var_apply_clauses(types, arity, clause, [type | acc])
+      :error -> of_var_apply_clauses(types, arity, clause, acc)
     end
   end
-  defp of_var_apply_clauses([], _arity, _clause, _acc, false) do
+  defp of_var_apply_clauses([], _arity, _clause, []) do
     :error
   end
-  defp of_var_apply_clauses([], _arity, {_, return, _}, acc, true) do
+  defp of_var_apply_clauses([], _arity, {_, return, _}, acc) do
     {:lists.reverse(acc), return}
   end
 
@@ -842,12 +880,17 @@ defmodule Types do
     end
   end
 
+  # If we have matched all arguments and we haven't inferred anything new,
+  # it means they are literals and there is no need for an exhaustive search.
+  defp of_fn_apply_each(_clauses, _arg, inferred, [], inferred, acc_body) do
+    {:ok, inferred, acc_body}
+  end
   defp of_fn_apply_each([{head, body, free} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
     {_, bind} = generalize_vars(free, :let)
     [head] = bind_args(head, bind)
     body = bind(body, bind)
 
-    with {lvars, _, rvars, [_ | _] = matched, _} <- unify(head, arg, inferred, acc_inferred) do
+    with {_, [_ | _] = matched, lvars, _, rvars} <- unify(head, arg, inferred, acc_inferred) do
       acc_body = union(acc_body, bind(body, lvars))
       of_fn_apply_each(clauses, arg, inferred, acc_arg -- matched, rvars, acc_body)
     else
@@ -881,7 +924,7 @@ defmodule Types do
   #
   # And the function must return {:ok, :error}.
   defp of_match(left, right, inferred, vars, match) do
-    with {lvars, _, rvars, _, []} <- unify(left, right, inferred, inferred) do
+    with {:equal, _, lvars, _, rvars} <- unify(left, right, inferred, inferred) do
       {lvars, rvars} = of_match_vars(Map.to_list(match), lvars, vars, rvars)
       {:ok, lvars, rvars, bind(right, rvars)}
     else

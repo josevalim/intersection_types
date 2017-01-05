@@ -183,21 +183,21 @@ defmodule TypesTest do
       right = {:tuple, [[{:value, :right}], [:integer]], 2}
 
       assert Types.unify(pattern, [left, right], %{}, %{}) ==
-             {%{0 => [:atom], 1 => [:integer]}, %{}, %{}, [right, left], []}
+             {:error, [right, left], %{0 => [:atom], 1 => [:integer]}, %{}, %{}}
 
       assert Types.unify(pattern, [left, right, :atom], %{}, %{}) ==
-             {%{0 => [:atom], 1 => [:integer]}, %{}, %{}, [right, left], [:atom]}
+             {:error, [right, left], %{0 => [:atom], 1 => [:integer]}, %{}, %{}}
 
       # This pattern requires the same type across left and right.
       pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
                  {:tuple, [[{:value, :right}], [{:var, {:x, nil}, 0}]], 2}]
 
       assert Types.unify(pattern, [left, right], %{}, %{}) ==
-             {%{0 => [:atom]}, %{}, %{}, [left], [right]}
+             {:error, [left], %{0 => [:atom]}, %{}, %{}}
 
       # The opposite should also fail.
       assert Types.unify([left, right], pattern, %{}, %{}) ==
-             {%{}, %{0 => [:atom]}, %{0 => [:atom]}, [hd(pattern)], [hd(tl(pattern))]}
+             {:error,  [hd(pattern)], %{}, %{0 => [:atom]}, %{0 => [:atom]}}
     end
   end
 
@@ -230,6 +230,9 @@ defmodule TypesTest do
 
       assert quoted_of((fn false -> true; true -> false end).(true)) |> format() ==
              "false"
+
+      assert quoted_of((fn :foo -> :bar; y :: atom() -> :baz end).(:foo)) |> format() ==
+             ":bar"
 
       assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of(fn x :: boolean() ->
@@ -314,6 +317,10 @@ defmodule TypesTest do
         c = x
         {a, b, c}
       end) |> format() == "(false -> {false, false, false})"
+
+      assert quoted_of(fn x :: atom() ->
+        (fn :foo -> :bar; y :: atom() -> :baz end).(x)
+      end) |> format() == "(atom() -> :bar | :baz)"
     end
 
     test "apply with closure" do
@@ -371,6 +378,11 @@ defmodule TypesTest do
           {x.(:foo), x.(:bar)}
         end).(fn y -> y end)
       ) |> format() == "{:foo, :bar}"
+
+      assert quoted_of((fn x ->
+          {x.(:foo), x.(:bar)}
+        end).(fn y :: atom() -> y end)
+      ) |> format() == "{atom(), atom()}"
 
       # Same clauses
       assert quoted_of((fn x ->
@@ -438,14 +450,28 @@ defmodule TypesTest do
       assert quoted_of((fn x -> x.(x) end).(fn y -> y end)) |> format() ==
              "(a -> a)"
 
-      # TODO: This is wrong. It should be {(a -> a), (a -> a)}.
-      # assert quoted_of((fn x -> {x.(x), x.(x)} end).(fn y -> y end)) |> format() ==
-      #        "{(a -> a), (a -> a)}"
+      assert quoted_of((fn x -> {x.(x), x.(x)} end).(fn y -> y end)) |> format() ==
+             "{(a -> a), (b -> b)}"
 
-      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                       (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
+      # TODO: Generalize on variable fetching
+      # let z = (\y -> y) in (z, z) :: (t1 -> t1, t -> t)
+      # TODO: Provide union and intersection between functions with free vars
+      # intersection((t -> t), (a -> a))
 
-      # TODO: This is wrong. It should type check.
+      # TODO: Make all of those pass
+      # assert quoted_of((fn x ->
+      #   z = (fn z :: atom() -> z end).(:bar)
+      #   {x.(:foo), x.(z), z}
+      # end)) |> format() == "(:foo -> :baz)"
+
+      # assert quoted_of((fn x ->
+      #   z = (fn z :: atom() -> z end).(:bar)
+      #   {x.(z), x.(:foo), z}
+      # end)) |> format() == "(:foo -> :baz)"
+
+      # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+      #                  (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
+
       # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
       #                  (fn :bar -> :baz; :foo -> :bar end)) |> format() == "(:foo -> :baz)"
     end
