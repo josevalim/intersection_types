@@ -395,11 +395,6 @@ defmodule TypesTest do
 
       assert quoted_of((y = fn x -> x end; {y, y})) |> format() ==
              "{(a -> a), (b -> b)}"
-
-      assert quoted_of(fn x ->
-        z = (fn y -> y end).(x)
-        x.(z)
-      end) |> format() == "(a ^^^ (a -> b) -> b)"
     end
 
     test "apply with function arguments" do
@@ -478,29 +473,6 @@ defmodule TypesTest do
     end
 
     test "apply with rank-2 function argument" do
-      # Case extracted from
-      # What are principal typings and what are they good for?
-      assert quoted_of((fn x -> x.(x) end).(fn y -> y end)) |> format() ==
-             "(a -> a)"
-
-      assert quoted_of((fn x -> {x.(x), x.(x)} end).(fn y -> y end)) |> format() ==
-             "{(a -> a), (b -> b)}"
-
-      # TODO: Provide union and intersection between functions with free vars
-      # intersection((t -> t), (a -> a))
-
-      # TODO: Make all of those pass
-      # assert quoted_of((fn x ->
-      #   z = (fn z :: atom() -> z end).(:bar)
-      #   {x.(:foo), x.(z), z}
-      # end)) |> format() == "(:foo -> :baz)"
-
-      # assert quoted_of((fn x ->
-      #   z = (fn z :: atom() -> z end).(:bar)
-      #   {x.(z), x.(:foo), z}
-      # end)) |> format() == "(:foo -> :baz)"
-
-      # TODO: Provide variable tracking
       # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
       #                  (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
 
@@ -583,28 +555,31 @@ defmodule TypesTest do
              "((:foo -> a) -> {a, a})"
 
       assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> format() ==
-             "((:bar -> a; :foo -> b) -> {b, a})"
-
-      assert quoted_of(fn x -> x.(x) end) |> format() ==
-             "(a ^^^ (a -> b) -> b)"
-
-      assert quoted_of(fn x -> x.({:ok, x}) end) |> format() ==
-             "(a ^^^ ({:ok, a} -> b) -> b)"
+             "((:foo -> a; :bar -> b) -> {a, b})"
 
       assert quoted_of(fn x -> x.(fn y -> y end) end) |> format() ==
              "(((a -> a) -> b) -> b)"
 
-      assert quoted_of(fn x -> {x.(x), x.(:foo)} end) |> format() ==
-             "(a ^^^ (:foo -> b; a -> c) -> {c, b})"
-
-      assert quoted_of(fn x -> {x.(:foo), x.(x)} end) |> format() ==
-             "(a ^^^ (a -> b; :foo -> c) -> {c, b})"
-
       assert quoted_of(fn x -> fn y -> x.(x.(y)) end end) |> format() ==
-             "((a -> b) ^^^ (b -> c) -> (a -> c))"
+             "((a -> b; b -> c) -> (a -> c))"
 
-      assert {:error, _, :rank2_restricted} =
-               quoted_of((fn x -> x.(fn y -> y.(y) end) end))
+      assert quoted_of((fn x ->
+        z = (fn z :: atom() -> z end).(:bar)
+        {x.(z), x.(z)}
+      end)) |> format() == "((atom() -> a) -> {a, a})"
+
+      assert quoted_of((fn x ->
+        z = (fn z :: atom() -> z end).(:bar)
+        {x.(:foo), x.(z)}
+      end)) |> format() == "((:foo -> a; atom() -> b) -> {a, b})"
+
+      assert quoted_of((fn x ->
+        z = (fn z :: atom() -> z end).(:bar)
+        {x.(z), x.(:foo)}
+      end)) |> format() == "((:foo -> a; atom() -> b) -> {b, a})"
+
+      assert {:error, _, {:recursive_fn, _, _, _}} =
+             quoted_of(fn x -> x.(x) end)
     end
   end
 end

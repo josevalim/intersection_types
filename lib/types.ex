@@ -21,7 +21,6 @@ defmodule Types do
   # {:fn, [clauses], arity}
   # {:tuple, args, arity}
   # {:var, var_ctx, var_key}
-  # {:intersection, left, right} (appears only on the left side)
   # :integer
   # :atom
 
@@ -46,17 +45,10 @@ defmodule Types do
         {letter, %{state | vars: vars, counter: counter + 1}}
     end
   end
-  defp type_to_algebra({:intersection, left, right}, state) do
-    {left_doc, state} = types_to_algebra(left, state)
-    {right_doc, state} = types_to_algebra(right, state)
-    left = maybe_surround(left_doc, left)
-    right = maybe_surround(right_doc, right)
-    {A.glue(A.concat(left, " ^^^"), right), state}
-  end
 
   defp type_to_algebra(:atom, state), do: {"atom()", state}
   defp type_to_algebra(:integer, state), do: {"integer()", state}
-  
+
   defp args_to_algebra(args, state) do
     {args, state} = Enum.map_reduce(args, state, &types_to_algebra/2)
     {A.fold_doc(args, &A.glue(A.concat(&1, ","), &2)), state}
@@ -71,9 +63,6 @@ defmodule Types do
       end)
     {A.fold_doc(clauses, &A.glue(A.concat(&1, ";"), &2)), state}
   end
-
-  defp maybe_surround(doc, [_]), do: doc
-  defp maybe_surround(doc, _), do: A.surround("(", doc, ")")
 
   defp counter_to_letter(counter) do
     div = div(counter, 26)
@@ -105,9 +94,7 @@ defmodule Types do
   # The :vars map keeps all Elixir variables and their types
   # The :match map keeps all Elixir variables defined in a match
   # The :inferred map keeps track of all inferred types (they have a counter)
-  # The :rewrite map keeps track of all counters that must be rewritten (for finding recursive calls)
-  # The :rank map keeps variables defined in the first rank
-  @state %{vars: %{}, match: %{}, inferred: %{}, rewrite: %{}, counter: 0, rank: nil}
+  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0}
 
   defp replace_vars(state, %{vars: vars}) do
     %{state | vars: vars}
@@ -143,7 +130,6 @@ defmodule Types do
   # {:defn, [clauses], arity}
   # {:tuple, args, arity}
   # {:var, var_ctx, var_key}
-  # {:intersection, left, right} (appears only on the left side)
   # :integer
   # :atom
 
@@ -248,51 +234,6 @@ defmodule Types do
   defp unify_kind(:subset, :match), do: :subset
   defp unify_kind(:match, :subset), do: :subset
   defp unify_kind(type, type), do: type
-
-  # Once an intersection is found, we need to solve it by expanding
-  # the function into an intersection as described in:
-  # "Expansion: the Crucial Mechanism for Type Inference with Intersection Types"
-  # Sébastien Carlier, J. B. Wells (2005)
-  defp unify_each({:intersection, inter_left, inter_right}, {:fn, clauses, arity} = right,
-                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    {left_clauses, right_clauses} = unify_expansion_split(clauses, [], [])
-    with {:match, _, type_lvars, type_rvars, acc_rvars} <-
-           unify(inter_left, [{:fn, left_clauses, arity}], lvars, rvars, type_lvars, type_rvars, acc_rvars),
-         {:match, _, type_lvars, type_rvars, acc_rvars} <-
-           unify(inter_right, [{:fn, right_clauses, arity}], type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars),
-         {:ok, type_rvars} <-
-           unify_expansion_join(clauses, type_rvars) do
-      {:match, right, type_lvars, type_rvars, acc_rvars}
-    else
-      _ -> :disjoint
-    end
-  end
-
-  defp unify_each({:fn, clauses, arity}, {:intersection, inter_left, inter_right} = right,
-                  lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    {left_clauses, right_clauses} = unify_expansion_split(clauses, [], [])
-
-    with {:match, _, type_lvars, type_rvars, acc_rvars} <-
-           unify([{:fn, left_clauses, arity}], inter_left, lvars, rvars, type_lvars, type_rvars, acc_rvars),
-         {:match, _, type_lvars, type_rvars, acc_rvars} <-
-           unify([{:fn, right_clauses, arity}], inter_right, type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars),
-         {:ok, type_lvars} <-
-           unify_expansion_join(clauses, type_lvars) do
-      {:match, right, type_lvars, type_rvars, acc_rvars}
-    else
-      _ -> :disjoint
-    end
-  end
-
-  # Intersections can only be compared to arrows (functions).
-  defp unify_each({:intersection, _, _}, _,
-                  _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
-    :disjoint
-  end
-  defp unify_each(_, {:intersection, _, _},
-                  _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars) do
-    :disjoint
-  end
 
   defp unify_each({:var, _, key1} = left, {:var, _, key2} = right,
                   lvars, rvars, type_lvars, type_rvars, acc_rvars) do
@@ -423,46 +364,6 @@ defmodule Types do
     :disjoint
   end
 
-  defp unify_expansion_split([{head, body, free} | clauses], left_acc, right_acc) do
-    {left_free, left_bind} = generalize_vars(free, :left)
-    {right_free, right_bind} = generalize_vars(free, :right)
-    left = {bind_args(head, left_bind), bind(body, left_bind), left_free}
-    right = {bind_args(head, right_bind), bind(body, right_bind), right_free}
-    unify_expansion_split(clauses, [left | left_acc], [right | right_acc])
-  end
-  defp unify_expansion_split([], left_acc, right_acc) do
-    {:lists.reverse(left_acc), :lists.reverse(right_acc)}
-  end
-
-  defp unify_expansion_join([{_, _, free} | clauses], vars) do
-    unify_expansion_join(free, clauses, vars)
-  end
-  defp unify_expansion_join([], vars) do
-    {:ok, vars}
-  end
-
-  defp unify_expansion_join([var | free], clauses, vars) do
-    {left, vars} = Map.pop(vars, {:left, var})
-    {right, vars} = Map.pop(vars, {:right, var})
-
-    cond do
-      left && right ->
-        case intersection(left, right) do
-          {[], _, _} -> :error
-          {types, _, _} -> unify_expansion_join(free, clauses, Map.put(vars, var, types))
-        end
-      left ->
-        unify_expansion_join(free, clauses, Map.put(vars, var, left))
-      right ->
-        unify_expansion_join(free, clauses, Map.put(vars, var, right))
-      true ->
-        unify_expansion_join(free, clauses, vars)
-    end
-  end
-  defp unify_expansion_join([], clauses, vars) do
-    unify_expansion_join(clauses, vars)
-  end
-
   @doc """
   Binds the variables to their types.
 
@@ -506,11 +407,6 @@ defmodule Types do
   end
   defp bind_each([{:tuple, args, arity} | types], acc, vars, preserve) do
     bind_each(types, [{:tuple, bind_args(args, vars, preserve), arity} | acc], vars, preserve)
-  end
-  defp bind_each([{:intersection, left, right} | types], acc, vars, preserve) do
-    left = bind(left, vars, preserve)
-    right = bind(right, vars, preserve)
-    bind_each(types, [{:intersection, left, right} | acc], vars, preserve)
   end
   defp bind_each([type | types], acc, vars, preserve) do
     bind_each(types, [type | acc], vars, preserve)
@@ -795,117 +691,68 @@ defmodule Types do
   ### Var apply
 
   defp of_var_apply(var_ctx, var_counter, meta, [arg], arity, state) do
-    %{counter: recur_counter, inferred: inferred, rank: rank, rewrite: rewrite} = state
-    previous_rewrite = Map.get(rewrite, var_counter)
-    recur = [{:var, var_ctx, recur_counter}]
-
-    # Change what the current variable points to. In case we infer a type for
-    # it during the arguments, we cannot just take them as is because they may
-    # be recursive types. Therefore we use the intersection operator described in
-    # "What are principal typings and what are they good for?", Trevor Jim (1996)
-    state =
-      %{state | counter: recur_counter + 1,
-                inferred: Map.put(inferred, recur_counter, []),
-                rewrite: Map.put_new(rewrite, var_counter, {false, recur})}
-
     with {:ok, arg_types, state} <- of(arg, state) do
-      %{inferred: inferred, counter: counter, rewrite: rewrite} = state
-      recur_types = Map.fetch!(inferred, recur_counter)
+      %{inferred: inferred, counter: counter} = state
+      return = [{:var, var_ctx, counter}]
 
-      {inferred, intersection} =
-        case rewrite do
-          %{^var_counter => {true, _}} when recur_types != [] ->
-            {inferred, recur_types}
-          %{^var_counter => {true, _}} ->
-            {inferred, recur}
-          %{} ->
-            {Map.delete(inferred, recur_counter), nil}
-        end
+      case bind(arg_types, %{var_counter => return}) do
+        ^arg_types ->
+          case of_var_apply_unify(var_counter, [arg_types], arity, inferred) do
+            {:match, types, return} ->
+              inferred =
+                inferred
+                |> Map.put(counter, [])
+                |> Map.put(var_counter, types)
+              ok(return, %{state | inferred: inferred})
+            {:nomatch, []} ->
+              :error
+            {:nomatch, types} ->
+              types =
+                for {:fn, clauses, arity} <- types do
+                  {:fn, of_var_apply_clauses(clauses, [arg_types], return), arity}
+                end
 
-      return = [{:var, {:return, Elixir}, counter}]
-      rewrite = if previous_rewrite, do: rewrite, else: Map.delete(rewrite, var_counter)
+              inferred =
+                inferred
+                |> Map.put(counter, [])
+                |> Map.put(var_counter, types)
 
-      types_return_or_error =
-        case of_var_apply_unify(var_counter, arg_types, counter, return, arity, inferred, intersection) do
-          {:match, types, return} ->
-            {types, return}
-          {:nomatch, types} ->
-            of_var_apply_clauses(types, arity, {[arg_types], return, [counter]})
-        end
-
-      cond do
-        types_return_or_error == :error ->
-          error(meta, {:invalid_fn, [{:var, var_ctx, var_counter}], arity})
-        intersection && of_var_apply_invalid_rank?(rank, var_ctx, var_counter) ->
-          error(meta, :rank2_restricted)
-        true ->
-          {types, return} = types_return_or_error
-
-          types =
-            if intersection do
-              [{:intersection, intersection, types}]
-            else
-              types
-            end
-
-          inferred = Map.put(inferred, var_counter, types)
-          ok(return, %{state | inferred: inferred, rewrite: rewrite, counter: counter + 1})
+              ok(return, %{state | inferred: inferred, counter: counter + 1})
+          end
+        _ ->
+          error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], arg_types, arity})
       end
     end
   end
 
-  defp of_var_apply_invalid_rank?(rank, var_ctx, var_counter) do
-    Map.get(rank, var_ctx) != [{:var, var_ctx, var_counter}]
-  end
-
-  defp of_var_apply_unify(key, arg, counter, return, arity, inferred, intersection) do
+  defp of_var_apply_unify(key, args, arity, inferred) do
     case Map.fetch!(inferred, key) do
       [] ->
         {:nomatch, [{:fn, [], arity}]}
-      existing when is_nil(intersection) ->
-        fun = [{:fn, [{[arg], return, [counter]}], arity}]
-
-        case unify(fun, existing, inferred, inferred) do
-          {_, [_ | _] = matched, lvars, _, _} ->
-            {:match, matched, bind(return, lvars)}
-          _ ->
-            {:nomatch, existing}
-        end
       existing ->
-        {:nomatch, existing}
+        funs = for {:fn, _, ^arity} = fun <- existing, do: fun
+
+        return =
+          Enum.reduce(funs, [], fn {:fn, clauses, _}, sum ->
+            Enum.reduce(clauses, sum, fn
+              {^args, return, _free}, sum -> union(sum, return)
+              {_, _, _}, sum -> sum
+            end)
+          end)
+
+        case return do
+          [] -> {:nomatch, funs}
+          _ -> {:match, funs, return}
+        end
     end
   end
 
-  defp of_var_apply_clauses(types, arity, clause) do
-    of_var_apply_clauses(types, arity, clause, [])
-  end
-
-  defp of_var_apply_clauses([type | types], arity, clause, acc) do
-    case of_var_apply_each_clause(type, arity, clause) do
-      {:ok, type} -> of_var_apply_clauses(types, arity, clause, [type | acc])
-      :error -> of_var_apply_clauses(types, arity, clause, acc)
-    end
-  end
-  defp of_var_apply_clauses([], _arity, _clause, []) do
-    :error
-  end
-  defp of_var_apply_clauses([], _arity, {_, return, _}, acc) do
-    {:lists.reverse(acc), return}
-  end
-
-  defp of_var_apply_each_clause({:fn, clauses, arity}, arity, clause) do
-    {:ok, {:fn, [clause | clauses], arity}}
-  end
-  defp of_var_apply_each_clause({:intersection, left, right}, arity, clause) do
-    case {of_var_apply_clauses(left, arity, clause), of_var_apply_clauses(right, arity, clause)} do
-      {{left, _}, {right, _}} -> {:ok, {:intersection, left, right}}
-      {:error, {right, _}} -> {:ok, {:intersection, left, right}}
-      {{left, _}, :error} -> {:ok, {:intersection, left, right}}
-      {:error, :error} -> :error
-    end
-  end
-  defp of_var_apply_each_clause(_, _arity, _clause) do
-    :error
+  defp of_var_apply_clauses(clauses, args, return) do
+    {pre, pos} =
+      Enum.split_while(clauses, fn {head, _, _} ->
+        qualify_args(head, args, %{}, :equal) |> elem(0) != :superset
+      end)
+    pre ++ [{args, return, []} | pos]
   end
 
   ### Fn Apply
@@ -989,15 +836,15 @@ defmodule Types do
   end
 
   defp of_clauses([{:->, _, [[arg], body]} | clauses],
-                   %{inferred: preserve, rank: rank} = state, acc_clauses, acc_state) do
+                   %{inferred: preserve} = state, acc_clauses, acc_state) do
     with {:ok, head, %{match: match, vars: vars} = acc_state} <- of_pattern(arg, acc_state),
-         acc_state = %{acc_state | vars: Map.merge(match, vars), rank: rank || match},
+         acc_state = %{acc_state | vars: Map.merge(match, vars)},
          {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state) do
       head = bind_args([head], inferred, preserve)
       body = bind(body, inferred, preserve)
       free_variables = free_variables(preserve, inferred)
       inferred = Map.drop(inferred, free_variables)
-      acc_state = replace_vars(%{acc_state | inferred: inferred, rank: rank}, state)
+      acc_state = replace_vars(%{acc_state | inferred: inferred}, state)
       of_clauses(clauses, state, [{head, body, free_variables} | acc_clauses], acc_state)
     end
   end
@@ -1024,15 +871,6 @@ defmodule Types do
 
   ## Vars
 
-  defp of_var([{:var, _, var_counter} = var| types], acc, %{rewrite: rewrite} = state) do
-    case rewrite do
-      %{^var_counter => {_, other}} ->
-        state = put_in(state.rewrite[var_counter], {true, other})
-        of_var(types, other ++ acc, state)
-      %{} ->
-        of_var(types, [var | acc], state)
-    end
-  end
   defp of_var([{:fn, clauses, arity} | types], acc, %{counter: counter} = state) do
     {clauses, counter} =
       Enum.map_reduce(clauses, counter, fn {head, body, free}, counter ->
