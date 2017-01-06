@@ -356,8 +356,8 @@ defmodule Types do
     end
   end
   defp unify_fn(_, _, [], lefties, righties,
-                lvars, rvars, type_lvars, type_rvars, acc_rvars, true) do
-    unify_fn(lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars)
+                _lvars, _rvars, type_lvars, type_rvars, acc_rvars, true) do
+    unify_fn(lefties, righties, type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars)
   end
   defp unify_fn(_, _, [], _lefties, _righties,
                 _lvars, _rvars, _type_lvars, _type_rvars, _acc_rvars, false) do

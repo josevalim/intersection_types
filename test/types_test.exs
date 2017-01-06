@@ -473,6 +473,10 @@ defmodule TypesTest do
     end
 
     test "apply with rank-2 function argument" do
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+               quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                         (fn :foo -> :bar; :baz -> :bat end))
+
       # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
       #                  (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
 
