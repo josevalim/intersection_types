@@ -255,13 +255,13 @@ defmodule Types do
   # Sébastien Carlier, J. B. Wells (2005)
   defp unify_each({:intersection, inter_left, inter_right}, {:fn, clauses, arity} = right,
                   lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    {left_clauses, right_clauses} = unify_expansion(clauses, [], [])
+    {left_clauses, right_clauses} = unify_expansion_split(clauses, [], [])
     with {:equal, _, type_lvars, type_rvars, acc_rvars} <-
            unify(inter_left, [{:fn, left_clauses, arity}], lvars, rvars, type_lvars, type_rvars, acc_rvars),
          {:equal, _, type_lvars, type_rvars, acc_rvars} <-
            unify(inter_right, [{:fn, right_clauses, arity}], type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars),
          {:ok, type_rvars} <-
-           unify_expansion_intersection(clauses, type_rvars) do
+           unify_expansion_join(clauses, type_rvars) do
       {:equal, right, type_lvars, type_rvars, acc_rvars}
     else
       _ -> :disjoint
@@ -270,14 +270,14 @@ defmodule Types do
 
   defp unify_each({:fn, clauses, arity}, {:intersection, inter_left, inter_right} = right,
                   lvars, rvars, type_lvars, type_rvars, acc_rvars) do
-    {left_clauses, right_clauses} = unify_expansion(clauses, [], [])
+    {left_clauses, right_clauses} = unify_expansion_split(clauses, [], [])
 
     with {:equal, _, type_lvars, type_rvars, acc_rvars} <-
            unify([{:fn, left_clauses, arity}], inter_left, lvars, rvars, type_lvars, type_rvars, acc_rvars),
          {:equal, _, type_lvars, type_rvars, acc_rvars} <-
            unify([{:fn, right_clauses, arity}], inter_right, type_lvars, type_rvars, type_lvars, type_rvars, acc_rvars),
          {:ok, type_lvars} <-
-           unify_expansion_intersection(clauses, type_lvars) do
+           unify_expansion_join(clauses, type_lvars) do
       {:equal, right, type_lvars, type_rvars, acc_rvars}
     else
       _ -> :disjoint
@@ -404,7 +404,6 @@ defmodule Types do
 
   defp unify_fn(left_head, left_body, [{right_head, right_body, right_free} | clauses],
                 lefties, righties, lvars, rvars, type_lvars, type_rvars, acc_rvars, matched?) do
-    # TODO: matched
     with {kind, _, temp_lvars, temp_rvars, temp_acc} when kind != :disjoint <-
            unify_args(left_head, right_head, lvars, rvars, type_lvars, type_rvars, acc_rvars),
          right_body =
@@ -429,25 +428,25 @@ defmodule Types do
     :disjoint
   end
 
-  defp unify_expansion([{head, body, free} | clauses], left_acc, right_acc) do
+  defp unify_expansion_split([{head, body, free} | clauses], left_acc, right_acc) do
     {left_free, left_bind} = generalize_vars(free, :left)
     {right_free, right_bind} = generalize_vars(free, :right)
     left = {bind_args(head, left_bind), bind(body, left_bind), left_free}
     right = {bind_args(head, right_bind), bind(body, right_bind), right_free}
-    unify_expansion(clauses, [left | left_acc], [right | right_acc])
+    unify_expansion_split(clauses, [left | left_acc], [right | right_acc])
   end
-  defp unify_expansion([], left_acc, right_acc) do
+  defp unify_expansion_split([], left_acc, right_acc) do
     {:lists.reverse(left_acc), :lists.reverse(right_acc)}
   end
 
-  defp unify_expansion_intersection([{_, _, free} | clauses], vars) do
-    unify_expansion_intersection(free, clauses, vars)
+  defp unify_expansion_join([{_, _, free} | clauses], vars) do
+    unify_expansion_join(free, clauses, vars)
   end
-  defp unify_expansion_intersection([], vars) do
+  defp unify_expansion_join([], vars) do
     {:ok, vars}
   end
 
-  defp unify_expansion_intersection([var | free], clauses, vars) do
+  defp unify_expansion_join([var | free], clauses, vars) do
     {left, vars} = Map.pop(vars, {:left, var})
     {right, vars} = Map.pop(vars, {:right, var})
 
@@ -455,18 +454,18 @@ defmodule Types do
       left && right ->
         case intersection(left, right) do
           {[], _, _} -> :error
-          {types, _, _} -> unify_expansion_intersection(free, clauses, Map.put(vars, var, types))
+          {types, _, _} -> unify_expansion_join(free, clauses, Map.put(vars, var, types))
         end
       left ->
-        unify_expansion_intersection(free, clauses, Map.put(vars, var, left))
+        unify_expansion_join(free, clauses, Map.put(vars, var, left))
       right ->
-        unify_expansion_intersection(free, clauses, Map.put(vars, var, right))
+        unify_expansion_join(free, clauses, Map.put(vars, var, right))
       true ->
-        unify_expansion_intersection(free, clauses, vars)
+        unify_expansion_join(free, clauses, vars)
     end
   end
-  defp unify_expansion_intersection([], clauses, vars) do
-    unify_expansion_intersection(clauses, vars)
+  defp unify_expansion_join([], clauses, vars) do
+    unify_expansion_join(clauses, vars)
   end
 
   @doc """
@@ -547,10 +546,10 @@ defmodule Types do
   end
 
   defp union(left, [right | righties], temp_left, temp_right, acc) do
-    case qualify(left, right) do
-      :disjoint -> union(left, righties, temp_left, [right | temp_right], acc)
-      :subset -> union(temp_left, :lists.reverse(temp_right, [right | righties]), acc)
-      _ -> union(temp_left, :lists.reverse(temp_right, righties), [left | acc])
+    case qualify(left, right, %{}) do
+      {:disjoint, _} -> union(left, righties, temp_left, [right | temp_right], acc)
+      {:subset, _} -> union(temp_left, :lists.reverse(temp_right, [right | righties]), acc)
+      {_, _} -> union(temp_left, :lists.reverse(temp_right, righties), [left | acc])
     end
   end
   defp union(left, [], temp_left, temp_right, acc) do
@@ -591,10 +590,10 @@ defmodule Types do
     end
   end
   defp intersection_type(left, right) do
-    case qualify(left, right) do
-      :disjoint -> :none
-      :superset -> {:replace, right}
-      _ -> :keep
+    case qualify(left, right, %{}) do
+      {:disjoint, _} -> :none
+      {:superset, _} -> {:replace, right}
+      {_, _} -> :keep
     end
   end
 
@@ -612,62 +611,118 @@ defmodule Types do
   defp intersection_args([], [], acc, :replace), do: {:replace, :lists.reverse(acc)}
 
   # Qualifies base types.
-  # Composite types need to be handled on the parent
-  defp qualify(type, type), do: :equal
+  defp qualify(type, type, vars), do: {:equal, vars}
 
-  defp qualify(:atom, {:value, atom}) when is_atom(atom), do: :superset
-  defp qualify({:value, atom}, :atom) when is_atom(atom), do: :subset
-
-  defp qualify({:tuple, args1, arity}, {:tuple, args2, arity}) do
-    qualify_args(args1, args2, :equal)
-  end
-
-  defp qualify(_, _), do: :disjoint
-
-  defp qualify_args([left | lefties], [right | righties], :equal) do
-    case qualify_left_right(:lists.sort(left), :lists.sort(right)) do
-      :equal -> qualify_args(lefties, righties, :equal)
-      kind -> qualify_args([left | lefties], [right | righties], kind)
+  defp qualify({:var, _, left_counter}, {:var, _, right_counter}, vars) do
+    left_key = {:left, left_counter}
+    right_key = {:right, right_counter}
+    case vars do
+      %{^left_key => right_value, ^right_key => left_value} ->
+        left_value = left_value || left_counter
+        right_value = right_value || right_counter
+        vars = %{vars | left_key => right_value, right_key => left_value}
+        if left_value == left_counter and right_value == right_counter do
+          {:equal, vars}
+        else
+          {:disjoint, vars}
+        end
+      %{} ->
+        {:disjoint, vars}
     end
   end
-  defp qualify_args([left | lefties], [right | righties], :superset) do
-    if qualify_superset?(left, right) do
-      qualify_args(lefties, righties, :superset)
+
+  defp qualify({:fn, left, arity}, {:fn, right, arity}, vars) do
+    qualify_fn(left, right, vars, :equal)
+  end
+
+  defp qualify(:atom, {:value, atom}, vars) when is_atom(atom), do: {:superset, vars}
+  defp qualify({:value, atom}, :atom, vars) when is_atom(atom), do: {:subset, vars}
+
+  defp qualify({:tuple, args1, arity}, {:tuple, args2, arity}, vars) do
+    qualify_args(args1, args2, vars, :equal)
+  end
+
+  defp qualify(_, _, vars), do: {:disjoint, vars}
+
+  defp qualify_args([left | lefties], [right | righties], vars, :equal) do
+    case qualify_look_ahead(:lists.sort(left), :lists.sort(right), vars) do
+      {:equal, vars} -> qualify_args(lefties, righties, vars, :equal)
+      {kind, vars} -> qualify_args([left | lefties], [right | righties], vars, kind)
+    end
+  end
+  defp qualify_args([left | lefties], [right | righties], vars, :superset) do
+    if vars = qualify_set(left, right, vars, :superset) do
+      qualify_args(lefties, righties, vars, :superset)
     else
-      :disjoint
+      {:disjoint, vars}
     end
   end
-  defp qualify_args([left | lefties], [right | righties], :subset) do
-    if qualify_superset?(right, left) do
-      qualify_args(lefties, righties, :subset)
+  defp qualify_args([left | lefties], [right | righties], vars, :subset) do
+    if vars = qualify_set(left, right, vars, :subset) do
+      qualify_args(lefties, righties, vars, :subset)
     else
-      :disjoint
+      {:disjoint, vars}
     end
   end
-  defp qualify_args(_, _, :disjoint) do
-    :disjoint
+  defp qualify_args(_, _, vars, :disjoint) do
+    {:disjoint, vars}
   end
-  defp qualify_args([], [], kind) do
-    kind
+  defp qualify_args([], [], vars, kind) do
+    {kind, vars}
   end
 
-  defp qualify_left_right([left | lefties], [right | righties]) do
-    case qualify(left, right) do
-      :equal -> qualify_left_right(lefties, righties)
-      kind -> kind
+  defp qualify_look_ahead([left | lefties], [right | righties], vars) do
+    case qualify(left, right, vars) do
+      {:equal, vars} -> qualify_look_ahead(lefties, righties, vars)
+      {kind, vars} -> {kind, vars}
     end
   end
-  defp qualify_left_right([], []), do: :equal
-  defp qualify_left_right([], _), do: :subset
-  defp qualify_left_right(_, []), do: :superset
+  defp qualify_look_ahead([], [], vars), do: {:equal, vars}
+  defp qualify_look_ahead([], _, vars), do: {:subset, vars}
+  defp qualify_look_ahead(_, [], vars), do: {:superset, vars}
 
-  defp qualify_superset?(lefties, righties) do
-    Enum.all?(righties, fn right ->
-      Enum.any?(lefties, fn left ->
-        qualify(left, right) in [:superset, :equal]
-      end)
-    end)
+  defp qualify_set(lefties, [right | righties], vars, kind) do
+    qualify_set(lefties, right, lefties, righties, vars, kind)
   end
+  defp qualify_set(_lefties, [], vars, _kind) do
+    vars
+  end
+
+  defp qualify_set([type | types], right, lefties, righties, vars, kind) do
+    case qualify(type, right, vars) do
+      {^kind, vars} -> qualify_set(lefties, righties, vars, kind)
+      {:equal, vars} -> qualify_set(lefties, righties, vars, kind)
+      {_, _} -> qualify_set(types, right, lefties, righties, vars, kind)
+    end
+  end
+  defp qualify_set([], _right, _lefties, _righties, _vars, _kind) do
+    nil
+  end
+
+  defp qualify_fn([{left_head, left_body, left_free} | lefties], righties, vars, kind) do
+    left_vars = Enum.reduce(left_free, vars, &Map.put(&2, {:left, &1}, nil))
+
+    row =
+      for {right_head, right_body, right_free} <- righties do
+        vars = Enum.reduce(right_free, left_vars, &Map.put(&2, {:right, &1}, nil))
+        qualify_args([left_body | left_head], [right_body | right_head], vars, :equal) |> elem(0)
+      end
+
+    case qualify_fn(row, kind, false) do
+      :disjoint -> {:disjoint, vars}
+      kind -> qualify_fn(lefties, righties, vars, kind)
+    end
+  end
+  defp qualify_fn([], _righties, vars, kind) do
+    {kind, vars}
+  end
+
+  defp qualify_fn([:disjoint | row], kind, matched?), do: qualify_fn(row, kind, matched?)
+  defp qualify_fn([kind | row], :equal, _matched?), do: qualify_fn(row, kind, true)
+  defp qualify_fn([kind | row], kind, _matched?), do: qualify_fn(row, kind, true)
+  defp qualify_fn([_ | _], _, _matched?), do: :disjoint
+  defp qualify_fn([], _kind, false), do: :disjoint
+  defp qualify_fn([], kind, true), do: kind
 
   @doc """
   Returns the type of the given expression.

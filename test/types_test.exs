@@ -13,6 +13,12 @@ defmodule TypesTest do
     |> IO.iodata_to_binary()
   end
 
+  defmacro quoted_of(expr) do
+    quote do
+      Types.of(unquote(Macro.escape(expr)))
+    end
+  end
+
   defmacro quoted_ast_to_types(ast) do
     quote do
       Types.ast_to_types(unquote(Macro.escape(ast)))
@@ -171,6 +177,32 @@ defmodule TypesTest do
                                 [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) |> elem(0) ==
              [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]
     end
+
+    test "fns" do
+      [{:tuple, [left, right], _}] =
+        quoted_of({fn x -> x end, fn y -> y end}) |> types()
+      assert Types.intersection(left, right) == {left, [], []}
+
+      [{:tuple, [left, right], _}] =
+        quoted_of({fn :foo -> :foo end, fn y :: atom() -> y end}) |> types()
+      assert Types.intersection(left, right) == {left, [], []}
+
+      [{:tuple, [left, right], _}] =
+        quoted_of({fn y :: atom() -> y end, fn :foo -> :foo end}) |> types()
+      assert Types.intersection(left, right) == {right, right, left}
+
+      [{:tuple, [left, right], _}] =
+        quoted_of({fn :foo -> :foo; :bar -> :bar end, fn y :: atom() -> y end}) |> types()
+      assert Types.intersection(left, right) == {left, [], []}
+
+      [{:tuple, [left, right], _}] =
+        quoted_of({fn y :: atom() -> y end, fn :foo -> :foo; :bar -> :bar end}) |> types()
+      assert Types.intersection(left, right) == {right, right, left}
+
+      [{:tuple, [left, right], _}] =
+        quoted_of({fn x :: integer() -> x end, fn y :: atom() -> y end}) |> types()
+      assert Types.intersection(left, right) == {[], [], left}
+    end
   end
 
   describe "unify/4" do
@@ -198,12 +230,6 @@ defmodule TypesTest do
       # The opposite should also fail.
       assert Types.unify([left, right], pattern, %{}, %{}) ==
              {:disjoint,  [hd(pattern)], %{}, %{0 => [:atom]}, %{0 => [:atom]}}
-    end
-  end
-
-  defmacro quoted_of(expr) do
-    quote do
-      Types.of(unquote(Macro.escape(expr)))
     end
   end
 
