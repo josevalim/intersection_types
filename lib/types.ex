@@ -35,9 +35,9 @@ defmodule Types do
     {clauses, state} = clauses_to_algebra(clauses, state)
     {A.surround("(", clauses, ")"), state}
   end
-  defp type_to_algebra({:var, _, var_counter} = var,
+  defp type_to_algebra({:var, _, var_counter},
                        %{vars: vars, counter: counter, rewrite: rewrite} = state) do
-    [{:var, _, var_counter}] = Map.get(rewrite, var_counter, [var])
+    var_counter = Map.get(rewrite, var_counter, var_counter)
     case vars do
       %{^var_counter => letter} ->
         {letter, state}
@@ -97,7 +97,8 @@ defmodule Types do
   # The :vars map keeps all Elixir variables and their types
   # The :match map keeps all Elixir variables defined in a match
   # The :inferred map keeps track of all inferred types (they have a counter)
-  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0}
+  # The :var_apply map keeps track of all var apply free variables
+  @state %{vars: %{}, match: %{}, inferred: %{}, var_apply: %{}, counter: 0}
 
   defp replace_vars(state, %{vars: vars}) do
     %{state | vars: vars}
@@ -226,8 +227,8 @@ defmodule Types do
 
   defp unify_each({:var, _, key1} = left, {:var, _, key2} = right,
                   rewrite, vars, type_vars, acc_vars) do
-    [{:var, _, key1}] = Map.get(rewrite, key1, [left])
-    [{:var, _, key2}] = Map.get(rewrite, key2, [right])
+    key1 = Map.get(rewrite, key1, key1)
+    key2 = Map.get(rewrite, key2, key2)
 
     case {Map.get(vars, key1, []), Map.get(vars, key2, [])} do
       {[], _} ->
@@ -256,11 +257,11 @@ defmodule Types do
   end
 
   defp unify_each({:var, _, key} = left, right, rewrite, vars, type_vars, acc_vars) do
-    unify_var(key, left, right, rewrite, vars, type_vars, acc_vars)
+    unify_var(key, right, rewrite, vars, type_vars, acc_vars)
   end
 
   defp unify_each(left, {:var, _, key} = right, rewrite, vars, type_vars, acc_vars) do
-    unify_var(key, right, left, rewrite, vars, type_vars, acc_vars)
+    unify_var(key, left, rewrite, vars, type_vars, acc_vars)
   end
 
   defp unify_each({:fn, lefties, arity}, {:fn, righties, arity},
@@ -303,8 +304,8 @@ defmodule Types do
     {kind, :lists.reverse(acc_matched), type_vars, acc_vars}
   end
 
-  defp unify_var(key, var, type, rewrite, vars, type_vars, acc_vars) do
-    [{:var, _, key}] = Map.get(rewrite, key, [var])
+  defp unify_var(key, type, rewrite, vars, type_vars, acc_vars) do
+    key = Map.get(rewrite, key, key)
 
     case Map.get(vars, key, []) do
       [] ->
@@ -325,39 +326,54 @@ defmodule Types do
     end
   end
 
-  defp unify_fn([{left_head, left_body, _, _} | lefties], righties,
+  defp unify_fn([{left_head, left_body, left_rewrite, left_inferred} | lefties], righties,
                 rewrite, vars, type_vars, acc_vars) do
-    # FREE: left_free
-    unify_fn(left_head, left_body, righties, lefties, righties,
-             rewrite, vars, type_vars, acc_vars, false)
+    fun_rewrite = Map.merge(rewrite, left_rewrite)
+    fun_vars = Map.merge(vars, left_inferred)
+    fun_type = Map.merge(type_vars, left_inferred)
+    fun_acc = Map.merge(acc_vars, left_inferred)
+
+    case unify_fn(left_head, left_body, righties, fun_rewrite, fun_vars, fun_type, fun_acc, false) do
+      {fun_type, fun_acc} ->
+        keys = Map.keys(left_inferred)
+        type_vars = Map.drop(fun_type, keys)
+        acc_vars = Map.drop(fun_acc, keys)
+        unify_fn(lefties, righties, rewrite, type_vars, type_vars, acc_vars)
+      :error ->
+        :disjoint
+    end
   end
   defp unify_fn([], righties, _rewrite, _vars, type_vars, acc_vars) do
     {:match, righties, type_vars, acc_vars}
   end
 
-  defp unify_fn(left_head, left_body, [{right_head, right_body, _, right_inferred} | clauses],
-                lefties, righties, rewrite, vars, type_vars, acc_vars, matched?) do
-    # FREE: right_free
-    with {kind, _, temp_vars, temp_acc} when kind != :disjoint <-
-           unify_args(left_head, right_head, rewrite, vars, type_vars, acc_vars),
+  defp unify_fn(left_head, left_body, [{right_head, right_body, right_rewrite, right_inferred} | clauses],
+                rewrite, vars, type_vars, acc_vars, matched?) do
+    fun_rewrite = Map.merge(rewrite, right_rewrite)
+    fun_vars = Map.merge(vars, right_inferred)
+    fun_type = Map.merge(type_vars, right_inferred)
+    fun_acc = Map.merge(acc_vars, right_inferred)
+    keys = Map.keys(right_inferred)
+
+    with {kind, _, fun_type, fun_acc} when kind != :disjoint <-
+           unify_args(left_head, right_head, fun_rewrite, fun_vars, fun_type, fun_acc),
          right_body =
-           bind(right_body, temp_vars, type_vars),
-         {:match, _, temp_vars, temp_acc} <-
-           unify(left_body, right_body, rewrite, temp_vars, temp_vars, temp_acc) do
-      type_vars = Map.drop(temp_vars, Map.keys(right_inferred))
-      acc_vars = Map.drop(temp_acc, Map.keys(right_inferred))
-      unify_fn(left_head, left_body, clauses, lefties, righties,
-               rewrite, vars, type_vars, acc_vars, true)
+           bind(right_body, Map.take(fun_type, keys), %{}),
+         {:match, _, fun_type, fun_acc} <-
+           unify(left_body, right_body, fun_rewrite, fun_type, fun_type, fun_acc) do
+      type_vars = Map.drop(fun_type, keys)
+      acc_vars = Map.drop(fun_acc, keys)
+      unify_fn(left_head, left_body, clauses, rewrite, vars, type_vars, acc_vars, true)
     else
-      _ -> unify_fn(left_head, left_body, clauses, lefties, righties,
-                    rewrite, vars, type_vars, acc_vars, matched?)
+      _ ->
+        unify_fn(left_head, left_body, clauses, rewrite, vars, type_vars, acc_vars, matched?)
     end
   end
-  defp unify_fn(_, _, [], lefties, righties, rewrite, _vars, type_vars, acc_vars, true) do
-    unify_fn(lefties, righties, rewrite, type_vars, type_vars, acc_vars)
+  defp unify_fn(_, _, [], _rewrite, _vars, type_vars, acc_vars, true) do
+    {type_vars, acc_vars}
   end
-  defp unify_fn(_, _, [], _lefties, _righties, _rewrite, _vars, _type_vars, _acc_vars, false) do
-    :disjoint
+  defp unify_fn(_, _, [], _rewrite, _vars, _type_vars, _acc_vars, false) do
+    :error
   end
 
   @doc """
@@ -374,12 +390,12 @@ defmodule Types do
   defp bind_each([{:fn, clauses, arity} | types], acc, vars, preserve) do
     clauses =
       for {head, body, rewrite, inferred} <- clauses do
-        vars = Map.merge(vars, inferred)
+        vars = Map.merge(inferred, vars)
         {bind_args(head, vars, preserve), bind(body, vars, preserve), rewrite, inferred}
       end
     bind_each(types, [{:fn, clauses, arity} | acc], vars, preserve)
   end
-  defp bind_each([{:var, _, key} = type | types], acc, vars, preserve) do
+  defp bind_each([{:var, ctx, key} = type | types], acc, vars, preserve) do
     case Map.get(preserve, key, []) do
       [] ->
         case Map.get(vars, key, []) do
@@ -388,9 +404,13 @@ defmodule Types do
                   "when binding #{inspect type} to #{inspect existing}"
           [] ->
             bind_each(types, [type | acc], vars, preserve)
-          existing ->
+          existing when is_list(existing) ->
             # TODO: union only works with bind if variables are guaranteed
             # to stay at the end, so we need to support such on unify.
+            existing = bind_each(existing, [], Map.put(vars, key, {:recursive, existing}), preserve)
+            bind_each(types, union(existing, acc), vars, preserve)
+          other ->
+            existing = [{:var, ctx, other}]
             existing = bind_each(existing, [], Map.put(vars, key, {:recursive, existing}), preserve)
             bind_each(types, union(existing, acc), vars, preserve)
         end
@@ -667,33 +687,28 @@ defmodule Types do
   ### Var apply
 
   defp of_var_apply(var_ctx, var_counter, meta, [arg_types], arity, state) do
-    %{inferred: inferred, counter: counter} = state
-    return = [{:var, var_ctx, counter}]
+    %{inferred: inferred, counter: counter, var_apply: var_apply} = state
 
     if of_var_apply_has_counter?([arg_types], var_counter) do
       error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], arg_types, arity})
     else
       case of_var_apply_unify(var_counter, [arg_types], arity, inferred) do
         {:match, types, return} ->
-          inferred =
-            inferred
-            |> Map.put(counter, [])
-            |> Map.put(var_counter, types)
-          ok(return, %{state | inferred: inferred})
+          inferred = Map.put(inferred, var_counter, types)
+          ok(return, %{state | inferred: inferred, var_apply: var_apply})
         {:nomatch, []} ->
           :error
         {:nomatch, types} ->
+          return = [{:var, var_ctx, counter}]
+
           types =
             for {:fn, clauses, arity} <- types do
               {:fn, of_var_apply_clauses(clauses, [arg_types], return), arity}
             end
 
-          inferred =
-            inferred
-            |> Map.put(counter, [])
-            |> Map.put(var_counter, types)
-
-          ok(return, %{state | inferred: inferred, counter: counter + 1})
+          inferred = Map.put(inferred, var_counter, types)
+          var_apply = Map.update(var_apply, var_counter, [counter], &[counter | &1])
+          ok(return, %{state | inferred: inferred, counter: counter + 1, var_apply: var_apply})
       end
     end
   end
@@ -820,9 +835,17 @@ defmodule Types do
                    %{inferred: preserve} = state, acc_clauses, acc_state) do
     with {:ok, head, %{match: match, vars: vars} = acc_state} <- of_pattern(arg, acc_state),
          acc_state = %{acc_state | vars: Map.merge(match, vars)},
-         {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state) do
+         {:ok, body, %{inferred: inferred, var_apply: var_apply} = acc_state} <- of(body, acc_state) do
       acc_state = replace_vars(acc_state, state)
-      {inferred, clause_inferred} = Map.split(inferred, Map.keys(preserve))
+      {acc_inferred, clause_inferred} = Map.split(inferred, Map.keys(preserve))
+      # TODO: Refactor me
+      clause_inferred = Enum.reduce(match, clause_inferred, fn {_, [{:var, _, var_counter}]}, acc ->
+        if counters = Map.get(var_apply, var_counter) do
+          Enum.reduce(counters, acc, &Map.put(&2, &1, Map.get(inferred, &1, [])))
+        else
+          acc
+        end
+      end)
       acc_state = %{acc_state | inferred: inferred}
       of_clauses(clauses, state, [{[head], body, %{}, clause_inferred} | acc_clauses], acc_state)
     end
@@ -848,8 +871,7 @@ defmodule Types do
   defp of_var({:fn, clauses, arity}, {vars, counter}) do
     {clauses, counter} =
       Enum.map_reduce(clauses, counter, fn {head, body, _, inferred}, counter ->
-        # FREE: free
-        rewrite = generalize_vars(Map.keys(inferred), counter, %{})
+        {rewrite, inferred} = generalize_vars(Map.to_list(inferred), counter, %{}, %{})
         {{head, body, rewrite, inferred}, counter + 1}
       end)
     {:ok, {:fn, clauses, arity}, {vars, counter}}
@@ -952,13 +974,13 @@ defmodule Types do
   # It works by going through all free variables in a function and
   # giving them a new binding.
 
-  # FREE: free
-  defp generalize_vars([name | names], kind, bind) do
-    bind = Map.put(bind, name, [{:var, {:gen, Elixir}, {kind, name}}])
-    generalize_vars(names, kind, bind)
+  defp generalize_vars([{key, value} | kvs], kind, rewrite, inferred) do
+    rewrite = Map.put(rewrite, key, {kind, key})
+    inferred = Map.put(inferred, {kind, key}, value)
+    generalize_vars(kvs, kind, rewrite, inferred)
   end
-  defp generalize_vars([], _kind, bind) do
-    bind
+  defp generalize_vars([], _kind, rewrite, inferred) do
+    {rewrite, inferred}
   end
 
   @compile {:inline, ok: 2, error: 2}

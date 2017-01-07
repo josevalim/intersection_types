@@ -200,6 +200,9 @@ defmodule TypesTest do
       assert quoted_of((fn false -> true; true -> false end).(true)) |> format() ==
              "false"
 
+      assert quoted_of((fn y :: atom() -> y end).(:foo)) |> format() ==
+             ":foo"
+
       assert quoted_of((fn :foo -> :bar; y :: atom() -> :baz end).(:foo)) |> format() ==
              ":bar"
 
@@ -287,7 +290,6 @@ defmodule TypesTest do
         {a, b, c}
       end) |> format() == "(a -> {false | a, a, a})"
 
-      # TODO: Variables should always union at the end
       assert quoted_of(fn x ->
         a = (fn true -> false; y -> y end).(x)
         b = (fn false -> false end).(x)
@@ -295,7 +297,6 @@ defmodule TypesTest do
         {a, b, c}
       end) |> format() == "(false -> {false, false, false})"
 
-      # TODO: Variables should always union at the end
       assert quoted_of(fn x ->
         (fn :foo -> :bar; y :: atom() -> :baz end).(x)
       end) |> format() == "(atom() -> :bar | :baz)"
@@ -453,8 +454,8 @@ defmodule TypesTest do
                          (fn :foo -> :bar; :baz -> :bat end))
 
       # TODO: Make those pass
-      # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-      #                  (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
 
       # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
       #                  (fn :bar -> :baz; :foo -> :bar end)) |> format() == "(:foo -> :baz)"
