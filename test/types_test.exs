@@ -214,21 +214,21 @@ defmodule TypesTest do
       left  = {:tuple, [[{:value, :left}], [:atom]], 2}
       right = {:tuple, [[{:value, :right}], [:integer]], 2}
 
-      assert Types.unify(pattern, [left, right], %{}, %{}) ==
-             {:disjoint, [right, left], %{0 => [:atom], 1 => [:integer]}, %{}, %{}}
+      assert Types.unify(pattern, [left, right], %{}, %{}, %{}) ==
+             {:disjoint, [right, left], %{}, %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
 
-      assert Types.unify(pattern, [left, right, :atom], %{}, %{}) ==
-             {:disjoint, [right, left], %{0 => [:atom], 1 => [:integer]}, %{}, %{}}
+      assert Types.unify(pattern, [left, right, :atom], %{}, %{}, %{}) ==
+             {:disjoint, [right, left], %{}, %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
 
       # This pattern requires the same type across left and right.
       pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
                  {:tuple, [[{:value, :right}], [{:var, {:x, nil}, 0}]], 2}]
 
-      assert Types.unify(pattern, [left, right], %{}, %{}) ==
-             {:disjoint, [left], %{0 => [:atom]}, %{}, %{}}
+      assert Types.unify(pattern, [left, right], %{}, %{}, %{}) ==
+             {:disjoint, [left], %{}, %{0 => [:atom]}, %{0 => [:atom]}}
 
       # The opposite should also fail.
-      assert Types.unify([left, right], pattern, %{}, %{}) ==
+      assert Types.unify([left, right], pattern, %{}, %{}, %{}) ==
              {:disjoint,  [hd(pattern)], %{}, %{0 => [:atom]}, %{0 => [:atom]}}
     end
   end
@@ -440,10 +440,24 @@ defmodule TypesTest do
       # Binding are lazy (z is true and not true | false)
       assert quoted_of(fn z ->
         (fn true -> true; false -> false end).(z)
-        a = (fn x -> {x.(:foo), x.(:bar)} end).(fn y -> z end)
+        x = z
         (fn true -> true end).(z)
-        a
-      end) |> format() == "(true -> {true, true})"
+        x
+      end) |> format() == "(true -> true)"
+
+      assert quoted_of(fn z ->
+        (fn true -> true end).(z)
+        x = z
+        (fn true -> true; false -> false end).(z)
+        x
+      end) |> format() == "(true -> true)"
+
+      assert quoted_of(fn z ->
+        (fn true -> true; false -> false end).(z)
+        x = z
+        (fn true -> true end).(x)
+        x
+      end) |> format() == "(true -> true)"
 
       # z must be nil
       assert quoted_of(fn z ->
@@ -477,6 +491,7 @@ defmodule TypesTest do
                quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                          (fn :foo -> :bar; :baz -> :bat end))
 
+      # TODO: Make those pass
       # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
       #                  (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
 
