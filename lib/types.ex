@@ -342,17 +342,17 @@ defmodule Types do
     fun_vars = Map.merge(vars, right_inferred)
     fun_type = Map.merge(type_vars, right_inferred)
     fun_acc = Map.merge(acc_vars, right_inferred)
-    keys = Map.keys(right_inferred)
 
     with {kind, _, fun_type, fun_acc} when kind != :disjoint <-
            unify_args(left_head, right_head, fun_vars, fun_type, fun_acc),
          right_body =
-           bind(right_body, Map.take(fun_type, keys), %{}),
+           bind(right_body, fun_type, type_vars),
          {:match, _, fun_type, fun_acc} <-
            unify(left_body, right_body, fun_type, fun_type, fun_acc) do
+      keys = Map.keys(right_inferred)
       type_vars = Map.drop(fun_type, keys)
       acc_vars = Map.drop(fun_acc, keys)
-      unify_fn(left_head, left_body, clauses, vars, type_vars, acc_vars, true)
+      unify_fn(left_head, left_body, clauses, vars, type_vars, acc_vars, kind == :match or matched?)
     else
       _ ->
         unify_fn(left_head, left_body, clauses, vars, type_vars, acc_vars, matched?)
@@ -379,7 +379,11 @@ defmodule Types do
   defp bind_each([{:fn, clauses, arity} | types], acc, vars, preserve) do
     clauses =
       for {head, body, inferred} <- clauses do
-        # TODO: This should not be invoked in internal cases
+        # It is ok to merge the inferred because generated functions
+        # only have inferred entries at the top-level. Therefore this
+        # will be a no-op for most cases.
+        # TODO: The lower precedence should not matter if inferred
+        # was correctly cleaned up.
         vars = Map.merge(inferred, vars)
         {bind_args(head, vars, preserve), bind(body, vars, preserve), inferred}
       end
@@ -834,6 +838,19 @@ defmodule Types do
          {:ok, body, %{inferred: inferred, var_apply: var_apply} = acc_state} <- of(body, acc_state) do
       acc_state = replace_vars(acc_state, state)
       {acc_inferred, clause_inferred} = Map.split(inferred, Map.keys(preserve))
+
+      # TODO: Today we return all inferred variables but we are only
+      # interested in the ones that are part of the head or of the
+      # return. Furthermore, any variable in the head and not in the
+      # return must be expanded. And any variable in the body and not
+      # in the head as well. Unless, of course, the variable is free,
+      # then it should remain as is.
+      #
+      # This should also remove any inferred type from any inner
+      # function, which should simplify both generalization and
+      # unification as we will need to look only to the outermost
+      # function.
+
       # TODO: Refactor me
       clause_inferred = Enum.reduce(match, clause_inferred, fn {_, [{:var, _, var_counter}]}, acc ->
         if counters = Map.get(var_apply, var_counter) do
@@ -877,7 +894,13 @@ defmodule Types do
       for {head, body, inferred} <- clauses do
         {head, _} = traverse_args(head, counter, &of_var_rewrite/2)
         {body, _} = traverse(body, counter, &of_var_rewrite/2)
-        inferred = for({k, v} <- inferred, do: {[counter | k], v}, into: %{})
+        # TODO: Once we rewrite of_clauses, nested inferred will
+        # always be empty. We should check this invariant here.
+        inferred =
+          for {k, v} <- inferred, into: %{} do
+            {v, _} = traverse(v, counter, &of_var_rewrite/2)
+            {[counter | k], v}
+          end
         {head, body, inferred}
       end
     {:replace, {:fn, clauses, arity}, counter}

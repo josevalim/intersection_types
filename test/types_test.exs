@@ -334,6 +334,11 @@ defmodule TypesTest do
         )) |> format() == ":foo"
 
       assert quoted_of((
+          x = fn y :: atom() -> y end
+          x.(:foo)
+        )) |> format() == ":foo"
+
+      assert quoted_of((
           x = fn y -> y end
           {x.(:foo), x.(:foo)}
         )) |> format() == "{:foo, :foo}"
@@ -357,6 +362,9 @@ defmodule TypesTest do
 
       assert quoted_of((w = (fn x -> z = fn y -> y end; {z, z} end); {w, w})) |> format() ==
              "{(a -> {(b -> b), (c -> c)}), (d -> {(e -> e), (f -> f)})}"
+
+      assert quoted_of((y = fn x -> fn y -> x.(x.(y)) end end; {y, y})) |> format() ==
+             "{((a -> b; b -> c) -> (a -> c)), ((d -> e; e -> f) -> (d -> f))}"
     end
 
     test "apply with function arguments" do
@@ -390,6 +398,12 @@ defmodule TypesTest do
         quoted_of((fn x ->
           {x.(:foo), x.(:bar), x.(:baz)}
         end).(fn :foo -> :x; :bar -> :y end))
+
+      # Support multiple bindings
+      assert quoted_of((fn x ->
+          {x.(:foo), x.(:bar), x.(:baz)}
+        end).(fn y :: atom() -> y end)
+      ) |> format() == "{:foo, :bar, :baz}"
 
       # Does not restrict functions
       assert quoted_of((
@@ -453,10 +467,10 @@ defmodule TypesTest do
                quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                          (fn :foo -> :bar; :baz -> :bat end))
 
-      # TODO: Make those pass
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                        (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
 
+      # TODO: Make this pass
       # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
       #                  (fn :bar -> :baz; :foo -> :bar end)) |> format() == "(:foo -> :baz)"
     end
