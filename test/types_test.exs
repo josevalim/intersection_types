@@ -2,12 +2,12 @@ defmodule TypesTest do
   use ExUnit.Case, async: true
 
   defp types({:ok, types, %{inferred: inferred}}) do
-    Types.bind(types, inferred)
+    Types.bind(types, inferred, %{})
   end
 
   defp format({:ok, types, %{inferred: inferred}}) do
     types
-    |> Types.bind(inferred)
+    |> Types.bind(inferred, %{})
     |> Types.types_to_algebra()
     |> Inspect.Algebra.format(:infinity)
     |> IO.iodata_to_binary()
@@ -395,6 +395,15 @@ defmodule TypesTest do
 
       assert quoted_of((y = fn x -> x end; {y, y})) |> format() ==
              "{(a -> a), (b -> b)}"
+
+      assert quoted_of((z = fn x -> fn y -> y end end; {z, z})) |> format() ==
+             "{(a -> (b -> b)), (c -> (d -> d))}"
+
+      assert quoted_of((z = (fn x -> fn y -> y end end).(:foo); {z, z})) |> format() ==
+             "{(a -> a), (b -> b)}"
+
+      assert quoted_of((w = (fn x -> z = fn y -> y end; {z, z} end); {w, w})) |> format() ==
+             "{(a -> {(b -> b), (c -> c)}), (d -> {(e -> e), (f -> f)})}"
     end
 
     test "apply with function arguments" do
@@ -555,7 +564,7 @@ defmodule TypesTest do
       assert quoted_of(fn z ->
         {x, y} = (fn true -> {true, :foo}; false -> {false, :bar} end).(z)
         {y, x}
-      end) |> format() == "(true | false -> {:foo | :bar, true | false})"
+      end) |> format() == "(false | true -> {:foo | :bar, true | false})"
     end
 
     test "free variables" do
