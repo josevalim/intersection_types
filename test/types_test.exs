@@ -157,21 +157,21 @@ defmodule TypesTest do
       left  = {:tuple, [[{:value, :left}], [:atom]], 2}
       right = {:tuple, [[{:value, :right}], [:integer]], 2}
 
-      assert Types.unify(pattern, [left, right], %{}, %{}, %{}) ==
+      assert Types.unify(pattern, [left, right], %{}, %{}) ==
              {:match, [right, left], %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
 
-      assert Types.unify(pattern, [left, right, :atom], %{}, %{}, %{}) ==
+      assert Types.unify(pattern, [left, right, :atom], %{}, %{}) ==
              {:disjoint, [right, left], %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
 
       # This pattern requires the same type across left and right.
       pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
                  {:tuple, [[{:value, :right}], [{:var, {:x, nil}, 0}]], 2}]
 
-      assert Types.unify(pattern, [left, right], %{}, %{}, %{}) ==
+      assert Types.unify(pattern, [left, right], %{}, %{}) ==
              {:disjoint, [left], %{0 => [:atom]}, %{0 => [:atom]}}
 
       # The opposite should also fail.
-      assert Types.unify([left, right], pattern, %{}, %{}, %{}) ==
+      assert Types.unify([left, right], pattern, %{}, %{}) ==
              {:disjoint,  [hd(pattern)], %{0 => [:atom]}, %{0 => [:atom]}}
     end
   end
