@@ -214,7 +214,7 @@ defmodule Types do
               acc_rvars, lefties, kind, [right | matched], unmatched)
       {:subset, subset, type_rvars, acc_rvars} ->
         unify(left, righties, lvars, rvars, type_rvars,
-              acc_rvars, lefties, unify_kind(:subset, kind), [subset | matched], [right | unmatched])
+              acc_rvars, lefties, unify_min(:subset, kind), [subset | matched], [right | unmatched])
       :disjoint ->
         unify(left, righties, lvars, rvars, type_rvars,
               acc_rvars, lefties, :disjoint, matched, [right | unmatched])
@@ -224,42 +224,87 @@ defmodule Types do
     unify(lefties, righties, lvars, type_rvars, type_rvars, acc_rvars, kind, matched)
   end
 
-  defp unify_kind(:disjoint, _), do: :disjoint
-  defp unify_kind(_, :disjoint), do: :disjoint
-  defp unify_kind(:subset, :match), do: :subset
-  defp unify_kind(:match, :subset), do: :subset
-  defp unify_kind(type, type), do: type
+  defp unify_min(:disjoint, _), do: :disjoint
+  defp unify_min(_, :disjoint), do: :disjoint
+  defp unify_min(:subset, _), do: :subset
+  defp unify_min(_, :subset), do: :subset
+  defp unify_min(_, _), do: :match
 
   defp unify_each({:var, _, key1} = left, {:var, _, key2} = right,
                   lvars, rvars, type_rvars, acc_rvars) do
     [{:var, _, key1}] = Map.get(lvars, key1, [left])
+    [{:var, _, key2}] = Map.get(lvars, key2, [right])
 
-    with {types, added, removed} <- unify_var(rvars, key1, [right]) do
-      acc_rvars = Map.put(acc_rvars, key2, Map.get(type_rvars, key2, []))
-      {:match,
-       right,
-       Map.update(type_rvars, key1, types, &((&1 -- removed) |> union(added))),
-       Map.update(acc_rvars, key1, types, &((&1 -- removed) |> union(added)))}
+    case {Map.get(rvars, key1, []), Map.get(rvars, key2, [])} do
+      {[], _} ->
+        # TODO: Is this still necessary?
+        acc_rvars = Map.put(acc_rvars, key2, Map.get(type_rvars, key2, []))
+        {:match,
+         right,
+         Map.update(type_rvars, key1, [right], &union(&1, [right])),
+         Map.update(acc_rvars, key1, [right], &union(&1, [right]))}
+      {_, []} ->
+        {:match,
+         right,
+         Map.update(type_rvars, key2, [left], &union(&1, [left])),
+         Map.update(acc_rvars, key2, [left], &union(&1, [left]))}
+      {left_value, right_value} ->
+        with {_, [_ | _] = match, type_rvars, acc_rvars} <-
+               unify(left_value, right_value, lvars, rvars, type_rvars, acc_rvars) do
+          # TODO: Is the union with match necessary?
+          {:match,
+           match,
+           Map.update(type_rvars, key2, match, &union(&1, match)),
+           Map.update(acc_rvars, key2, match, &union(&1, match))}
+        else
+          _ -> :disjoint # TODO: Make this return disjoint
+        end
     end
   end
 
   defp unify_each({:var, _, key} = left, right, lvars, rvars, type_rvars, acc_rvars) do
     [{:var, _, key}] = Map.get(lvars, key, [left])
 
-    with {types, added, removed} <- unify_var(rvars, key, [right]) do
-      {:match,
-       right,
-       Map.update(type_rvars, key, types, &((&1 -- removed) |> union(added))),
-       Map.update(acc_rvars, key, types, &((&1 -- removed) |> union(added)))}
+    case Map.get(rvars, key, []) do
+      [] ->
+        {:match,
+         right,
+         Map.update(type_rvars, key, [right], &union(&1, [right])),
+         Map.update(acc_rvars, key, [right], &union(&1, [right]))}
+      value ->
+        with {_, [_ | _] = match, type_rvars, acc_rvars} <-
+               unify(value, [right], lvars, rvars, type_rvars, acc_rvars) do
+          # TODO: Is the union with match necessary?
+          {:match,
+           match,
+           type_rvars,
+           acc_rvars}
+        else
+          _ -> :disjoint # TODO: Make this return disjoint
+        end
     end
   end
 
-  defp unify_each(left, {:var, _, key} = right, _lvars, rvars, type_rvars, acc_rvars) do
-    with {types, added, removed} <- unify_var(rvars, key, [left]) do
-      {:match,
-       right,
-       Map.update(type_rvars, key, types, &((&1 -- removed) |> union(added))),
-       Map.update(acc_rvars, key, types, &((&1 -- removed) |> union(added)))}
+  defp unify_each(left, {:var, _, key} = right, lvars, rvars, type_rvars, acc_rvars) do
+    [{:var, _, key}] = Map.get(lvars, key, [right])
+
+    case Map.get(rvars, key, []) do
+      [] ->
+        {:match,
+         right,
+         Map.update(type_rvars, key, [left], &union(&1, [left])),
+         Map.update(acc_rvars, key, [left], &union(&1, [left]))}
+      value ->
+        with {_, [_ | _] = match, type_rvars, acc_rvars} <-
+               unify(value, [left], lvars, rvars, type_rvars, acc_rvars) do
+          # TODO: Is the union with match necessary?
+          {:match,
+           match,
+           Map.put(type_rvars, key, [left]),
+           Map.put(acc_rvars, key, [left])}
+        else
+          _ -> :disjoint # TODO: Make this return disjoint
+        end
     end
   end
 
@@ -285,18 +330,6 @@ defmodule Types do
     end
   end
 
-  defp unify_var(vars, key, types) do
-    case Map.get(vars, key, []) do
-      [] ->
-        {types, types, []}
-      existing ->
-        case intersection(existing, types) do
-          {[], _added, _remove} -> :disjoint
-          {types, added, removed} -> {types, added, removed}
-        end
-    end
-  end
-
   defp unify_args(lefties, righties, lvars, rvars, type_rvars, acc_rvars) do
     unify_args(lefties, righties, lvars, rvars, type_rvars, acc_rvars, :match, [])
   end
@@ -308,7 +341,7 @@ defmodule Types do
         :disjoint
       {kind, matched, type_rvars, acc_rvars} ->
         unify_args(lefties, righties, lvars, rvars, type_rvars, acc_rvars,
-                   unify_kind(kind, acc_kind), [matched | acc_matched])
+                   unify_min(kind, acc_kind), [matched | acc_matched])
     end
   end
   defp unify_args([], [], _lvars, _rvars, type_rvars, acc_rvars, kind, acc_matched) do
@@ -357,14 +390,19 @@ defmodule Types do
   to guarantee anonymous functions only interpolate variables
   introduced by themselves.
   """
-  def bind(types, vars, _preserve) when vars == %{} do
-    types
-  end
-  def bind(types, vars, preserve) do
-    traverse(types, vars, &bind_each(&1, &2, preserve)) |> elem(0)
+  def bind(types, vars, preserve \\ %{}) do
+    :lists.reverse(bind_each(types, [], vars, preserve))
   end
 
-  defp bind_each({:var, _, key} = type, vars, preserve) do
+  defp bind_each([{:fn, clauses, arity} | types], acc, vars, preserve) do
+    clauses =
+      for {head, body, rewrite, inferred} <- clauses do
+        vars = Map.merge(vars, inferred)
+        {bind_args(head, vars, preserve), bind(body, vars, preserve), rewrite, inferred}
+      end
+    bind_each(types, [{:fn, clauses, arity} | acc], vars, preserve)
+  end
+  defp bind_each([{:var, _, key} = type | types], acc, vars, preserve) do
     case Map.get(preserve, key, []) do
       [] ->
         case Map.get(vars, key, []) do
@@ -372,17 +410,25 @@ defmodule Types do
             raise "type checker found undetected recursive definition " <>
                   "when binding #{inspect type} to #{inspect existing}"
           [] ->
-            {:ok, type, vars}
+            bind_each(types, [type | acc], vars, preserve)
           existing ->
-            existing = bind(existing, Map.put(vars, key, {:recursive, existing}), preserve)
-            {:union, existing, vars}
+            # TODO: union only works with bind if variables are guaranteed
+            # to stay at the end, so we need to support such on unify.
+            existing = bind_each(existing, [], Map.put(vars, key, {:recursive, existing}), preserve)
+            bind_each(types, union(existing, acc), vars, preserve)
         end
       _ ->
-        {:ok, type, vars}
+        bind_each(types, [type | acc], vars, preserve)
     end
   end
-  defp bind_each(type, vars, _preserve) do
-    {:ok, type, vars}
+  defp bind_each([{:tuple, args, arity} | types], acc, vars, preserve) do
+    bind_each(types, [{:tuple, bind_args(args, vars, preserve), arity} | acc], vars, preserve)
+  end
+  defp bind_each([type | types], acc, vars, preserve) do
+    bind_each(types, [type | acc], vars, preserve)
+  end
+  defp bind_each([], acc, _vars, _preserve) do
+    acc
   end
 
   defp bind_args(args, vars, preserve) do
@@ -417,8 +463,6 @@ defmodule Types do
   end
 
   defp traverse_apply(type, types, acc, state, fun) do
-    # TODO: union only works with bind if variables are guaranteed
-    # to stay at the end, so we need to support such on unify.
     case fun.(type, state) do
       {:ok, type, state} -> traverse(types, [type | acc], state, fun)
       {:union, extra, state} -> traverse(types, union(extra, acc), state, fun)
@@ -453,60 +497,6 @@ defmodule Types do
   defp union(left, [], temp_left, temp_right, acc) do
     union(temp_left, :lists.reverse(temp_right), [left | acc])
   end
-
-  @doc """
-  Computes the intersection between two union types.
-
-  It returns which items were added and removed from the left side.
-  """
-  def intersection(lefties, righties) do
-    intersection(lefties, righties, [], [], [])
-  end
-
-  defp intersection([left | lefties], righties, acc, added, removed) do
-    intersection(left, righties, lefties, righties, acc, added, removed)
-  end
-  defp intersection([], _righties, acc, added, removed) do
-    {acc, :lists.reverse(added), removed}
-  end
-
-  defp intersection(left, [head | tail], lefties, righties, acc, added, removed) do
-    case intersection_type(left, head) do
-      {:replace, type} -> intersection(lefties, righties, [type | acc], [type | added], [left | removed])
-      :keep -> intersection(lefties, righties, [left | acc], added, removed)
-      :none -> intersection(left, tail, lefties, righties, acc, added, removed)
-    end
-  end
-  defp intersection(left, [], lefties, righties, acc, added, removed) do
-    intersection(lefties, righties, acc, added, [left | removed])
-  end
-
-  defp intersection_type({:tuple, args1, arity}, {:tuple, args2, arity}) do
-    case intersection_args(args1, args2, [], :keep) do
-      {:replace, args} -> {:replace, {:tuple, args, arity}}
-      other -> other
-    end
-  end
-  defp intersection_type(left, right) do
-    case qualify(left, right, %{}) do
-      {:disjoint, _} -> :none
-      {:superset, _} -> {:replace, right}
-      {_, _} -> :keep
-    end
-  end
-
-  defp intersection_args([left | lefties], [right | righties], acc, kind) do
-    case intersection(left, right) do
-      {[], _, _} ->
-        :none
-      {intersection, [], []} when kind == :keep ->
-        intersection_args(lefties, righties, [intersection | acc], :keep)
-      {intersection, _, _} ->
-        intersection_args(lefties, righties, [intersection | acc], :replace)
-    end
-  end
-  defp intersection_args([], [], _acc, :keep), do: :keep
-  defp intersection_args([], [], acc, :replace), do: {:replace, :lists.reverse(acc)}
 
   # Qualifies base types.
   defp qualify(type, type, vars), do: {:equal, vars}
@@ -786,13 +776,15 @@ defmodule Types do
   defp of_fn_apply_each(_clauses, _arg, inferred, [], inferred, acc_body) do
     {:ok, inferred, acc_body}
   end
-  defp of_fn_apply_each([{[head], body, rewrite, _} | clauses], arg, inferred, acc_arg, acc_inferred, acc_body) do
-    # FREE: free
-    with {_, [_ | _] = matched, _, rvars} <- unify(head, arg, rewrite, inferred, acc_inferred) do
-      acc_body = union(acc_body, bind(bind(body, rewrite, %{}), rvars, inferred))
-      of_fn_apply_each(clauses, arg, inferred, acc_arg -- matched, rvars, acc_body)
+  defp of_fn_apply_each([{[head], body, rewrite, vars} | clauses],
+                        arg, inferred, acc_arg, acc_inferred, acc_body) do
+    with {_, [_ | _] = matched, _, acc_inferred} <-
+           unify(head, arg, rewrite, Map.merge(inferred, vars), Map.merge(acc_inferred, vars)) do
+      acc_body = union(acc_body, bind(body, rewrite, %{}))
+      of_fn_apply_each(clauses, arg, inferred, acc_arg -- matched, acc_inferred, acc_body)
     else
-      _ -> of_fn_apply_each(clauses, arg, inferred, acc_arg, acc_inferred, acc_body)
+      _ ->
+        of_fn_apply_each(clauses, arg, inferred, acc_arg, acc_inferred, acc_body)
     end
   end
   defp of_fn_apply_each([], _arg, _inferred, [], acc_inferred, acc_body) do
@@ -853,27 +845,13 @@ defmodule Types do
          acc_state = %{acc_state | vars: Map.merge(match, vars)},
          {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state) do
       acc_state = replace_vars(acc_state, state)
-      head = bind_args([head], inferred, preserve)
-      body = bind(body, inferred, preserve)
-      clause_inferred = of_clauses_inferred(preserve, inferred)
-
-      # Drop everything that was inferred inside the clause from acc_state.
-      # The reason we do not simply revert to preserved is because we may
-      # have inferred more information from outer variables.
-      inferred = Map.drop(inferred, Map.keys(clause_inferred))
+      {inferred, clause_inferred} = Map.split(inferred, Map.keys(preserve))
       acc_state = %{acc_state | inferred: inferred}
-
-      of_clauses(clauses, state, [{head, body, %{}, clause_inferred} | acc_clauses], acc_state)
+      of_clauses(clauses, state, [{[head], body, %{}, clause_inferred} | acc_clauses], acc_state)
     end
   end
   defp of_clauses([], _state, acc_clauses, acc_state) do
     {:ok, :lists.reverse(acc_clauses), acc_state}
-  end
-
-  # FREE: free
-  defp of_clauses_inferred(preserve, inferred) do
-    inferred = Enum.reduce(preserve, inferred, fn {k, _}, acc -> Map.delete(acc, k) end)
-    for {k, []} <- inferred, into: %{}, do: {k, []}
   end
 
   ## Blocks
@@ -925,27 +903,32 @@ defmodule Types do
     literal(other, vars, &of_pattern_each/2)
   end
 
-  defp of_pattern_var(_meta, var_ctx, %{match: match, counter: counter, inferred: inferred} = state) do
+  defp of_pattern_var(_meta, var_ctx, state) do
+    %{match: match, counter: counter, inferred: inferred} = state
+
     case Map.fetch(match, var_ctx) do
       {:ok, type} ->
         ok(type, state)
       :error ->
-        types = [{:var, var_ctx, counter}]
-        match = Map.put(match, var_ctx, types)
         inferred = Map.put(inferred, counter, [])
-        ok(types, %{state | match: match, counter: counter + 1, inferred: inferred})
+        return = [{:var, var_ctx, counter}]
+        match = Map.put(match, var_ctx, return)
+        ok(return, %{state | match: match, counter: counter + 1, inferred: inferred})
     end
   end
 
-  defp of_pattern_bound_var(meta, var_ctx, type, %{match: match} = state) do
+  defp of_pattern_bound_var(meta, var_ctx, types, state) do
+    %{match: match, counter: counter, inferred: inferred} = state
     case Map.fetch(match, var_ctx) do
-      {:ok, ^type} ->
-        ok(type, state)
+      {:ok, ^types} ->
+        ok(types, state)
       {:ok, other} ->
-        error(meta, {:bound_var, var_ctx, other, type})
+        error(meta, {:bound_var, var_ctx, other, types})
       :error ->
-        match = Map.put(match, var_ctx, type)
-        ok(type, %{state | match: match})
+        inferred = Map.put(inferred, counter, types)
+        return = [{:var, var_ctx, counter}]
+        match = Map.put(match, var_ctx, return)
+        ok(return, %{state | match: match, counter: counter + 1, inferred: inferred})
     end
   end
 
