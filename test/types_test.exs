@@ -236,6 +236,29 @@ defmodule TypesTest do
                quoted_of({:ok, a :: atom()} = {:ok, 0})
     end
 
+    test "generalization" do
+      assert quoted_of((y = fn x -> x end; y.(y))) |> format() ==
+             "(a -> a)"
+
+      assert quoted_of((y = fn x -> x end; {y, y})) |> format() ==
+             "{(a -> a), (b -> b)}"
+
+      assert quoted_of((z = fn x -> fn y -> y end end; {z, z})) |> format() ==
+             "{(a -> (b -> b)), (c -> (d -> d))}"
+
+      assert quoted_of((z = (fn x -> fn y -> y end end).(:foo); {z, z})) |> format() ==
+             "{(a -> a), (b -> b)}"
+
+      assert quoted_of((w = (fn x -> z = fn y -> y end; {z, z} end); {w, w})) |> format() ==
+             "{(a -> {(b -> b), (c -> c)}), (d -> {(e -> e), (f -> f)})}"
+
+      assert quoted_of((y = fn x -> fn y -> x.(x.(y)) end end; {y, y})) |> format() ==
+             "{((a -> b; b -> c) -> (a -> c)), ((d -> e; e -> f) -> (d -> f))}"
+
+      assert quoted_of(fn x -> z = fn y -> {x, y} end; {z, z} end) |> format() ==
+             "(a -> {(b -> {a, b}), (c -> {a, c})})"
+    end
+
     test "apply" do
       assert quoted_of((fn false -> true; true -> false end).(false)) |> format() ==
              "true"
@@ -356,16 +379,6 @@ defmodule TypesTest do
       end) |> format() == "(atom() -> :bar | :baz)"
     end
 
-    test "apply with closure" do
-      assert quoted_of((fn x -> (fn y -> x end) end).(true)) |> format() ==
-             "(a -> true)"
-
-      assert quoted_of((fn x -> (fn y -> x end) end).(true).(:foo)) |> format() ==
-             "true"
-    end
-
-    # This test is about let polymorphism.
-    #
     # Although rank 2 intersection types do not require let polymorphism,
     # we implement them to avoid having to rearrange ASTs into let formats.
     # Papers such as "Let should not be generalized" argue against this
@@ -397,27 +410,6 @@ defmodule TypesTest do
           x = fn y -> y end
           {x.(:foo), x.(:bar)}
         )) |> format() == "{:foo, :bar}"
-
-      assert quoted_of((y = fn x -> x end; y.(y))) |> format() ==
-             "(a -> a)"
-
-      assert quoted_of((y = fn x -> x end; {y, y})) |> format() ==
-             "{(a -> a), (b -> b)}"
-
-      assert quoted_of((z = fn x -> fn y -> y end end; {z, z})) |> format() ==
-             "{(a -> (b -> b)), (c -> (d -> d))}"
-
-      assert quoted_of((z = (fn x -> fn y -> y end end).(:foo); {z, z})) |> format() ==
-             "{(a -> a), (b -> b)}"
-
-      assert quoted_of((w = (fn x -> z = fn y -> y end; {z, z} end); {w, w})) |> format() ==
-             "{(a -> {(b -> b), (c -> c)}), (d -> {(e -> e), (f -> f)})}"
-
-      assert quoted_of((y = fn x -> fn y -> x.(x.(y)) end end; {y, y})) |> format() ==
-             "{((a -> b; b -> c) -> (a -> c)), ((d -> e; e -> f) -> (d -> f))}"
-
-      assert quoted_of(fn x -> z = fn y -> {x, y} end; {z, z} end) |> format() ==
-             "(a -> {(b -> {a, b}), (c -> {a, c})})"
     end
 
     test "apply with function arguments" do
@@ -465,7 +457,7 @@ defmodule TypesTest do
         c)) |> format() == "(a -> a)"
     end
 
-    test "apply with function arguments and free variables" do
+    test "apply with lazy inference" do
       # Binding are lazy (z is true and not true | false)
       assert quoted_of(fn z ->
         (fn true -> true; false -> false end).(z)
@@ -515,6 +507,14 @@ defmodule TypesTest do
         end)
     end
 
+    test "apply with lazy let inference" do
+      assert quoted_of(fn x ->
+        z = (fn true -> true; false -> false end).(x)
+        (fn true -> true end).(x)
+        z
+      end) |> format() == "(true -> true)"
+    end
+
     test "apply with rank-2 function argument" do
       assert {:error, _, {:disjoint_apply, _, _, _}} =
                quoted_of((fn x -> fn y -> x.(x.(y)) end end).
@@ -523,9 +523,8 @@ defmodule TypesTest do
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                        (fn :foo -> :bar; :bar -> :baz end)) |> format() == "(:foo -> :baz)"
 
-      # TODO: Make this pass
-      # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-      #                  (fn :bar -> :baz; :foo -> :bar end)) |> format() == "(:foo -> :baz)"
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn :bar -> :baz; :foo -> :bar end)) |> format() == "(:foo -> :baz)"
     end
   end
 

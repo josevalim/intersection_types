@@ -95,6 +95,9 @@ defmodule Types do
     end
   end
 
+  ## Adding a new type
+  # bind, traverse, is_supertype?, quantify, types_to_algebra
+
   ## Patterns
   # 1. adding types/patterns to receive
   # 2. mixing typed with non-typed
@@ -346,6 +349,7 @@ defmodule Types do
 
   defp unify_fn([{left_head, left_body, left_inferred} | lefties], righties,
                 keep, vars, type_vars, acc_vars) do
+
     fun_vars = Map.merge(vars, left_inferred)
     fun_type = Map.merge(type_vars, left_inferred)
     fun_acc = Map.merge(acc_vars, left_inferred)
@@ -375,7 +379,7 @@ defmodule Types do
          {right_body, _} =
            bind(right_body, fun_type, type_vars),
          {:match, _, fun_type, fun_acc} <-
-           unify(left_body, right_body, keep, fun_type, fun_type, fun_acc) do
+           unify(left_body, right_body, keep, fun_vars, fun_type, fun_acc) do
       keys = Map.keys(right_inferred)
       type_vars = Map.drop(fun_type, keys)
       acc_vars = Map.drop(fun_acc, keys)
