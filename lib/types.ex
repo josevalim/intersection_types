@@ -9,7 +9,26 @@ defmodule Types do
   Convert the types AST to an algebra document.
   """
   def types_to_algebra(types) do
-    types_to_algebra(types, %{counter: 0, vars: %{}}) |> elem(0)
+    {types, %{inferred: inferred} = state} =
+      types_to_algebra(types, %{counter: 0, vars: %{}, inferred: %{}})
+
+    case inferred_to_algebra(inferred, state) do
+      {:ok, guards} -> A.nest(A.glue(A.concat(types, " when"), guards), 2)
+      :none -> types
+    end
+  end
+
+  defp inferred_to_algebra(inferred, %{vars: vars} = state) do
+    guards =
+      for {key, [_ | _] = value} <- inferred do
+        left = Map.fetch!(vars, key)
+        {right, _} = types_to_algebra(value, state)
+        A.concat(A.concat(left, ": "), right)
+      end
+    case guards do
+      [] -> :none
+      _ -> {:ok, A.fold_doc(guards, &A.glue(A.concat(&1, ","), &2))}
+    end
   end
 
   defp types_to_algebra(types, state) do
@@ -56,9 +75,10 @@ defmodule Types do
 
   defp clauses_to_algebra(clauses, state) do
     {clauses, state} =
-      Enum.map_reduce(clauses, state, fn {head, body, _}, state ->
+      Enum.map_reduce(clauses, state, fn {head, body, inferred}, state ->
         {head, state} = args_to_algebra(head, state)
         {body, state} = types_to_algebra(body, state)
+        state = update_in(state.inferred, &Map.merge(&1, inferred))
         {A.nest(A.glue(A.concat(head, " ->"), body), 2), state}
       end)
     {A.fold_doc(clauses, &A.glue(A.concat(&1, ";"), &2)), state}
@@ -365,6 +385,27 @@ defmodule Types do
   end
 
   @doc """
+  Check if the given types can be supertype of another type.
+
+  Unions, free variables and supertypes per se, such as atoms,
+  are supertypes.
+  """
+  def has_supertype?([type]), do: is_supertype?(type)
+  def has_supertype?(types) when is_list(types), do: true
+
+  defp is_supertype?({:tuple, args, _}) do
+    Enum.any?(args, &has_supertype?/1)
+  end
+  defp is_supertype?({:fn, clauses, _}) do
+    Enum.any?(clauses, fn {head, body, _} ->
+      Enum.any?(head, &has_supertype?/1) or has_supertype?(body)
+    end)
+  end
+
+  defp is_supertype?(:atom), do: true
+  defp is_supertype?(_), do: false
+
+  @doc """
   Binds the variables to their types.
 
   A set of variables to not be replaced can be given, useful
@@ -386,10 +427,9 @@ defmodule Types do
   defp bind_each([{:fn, clauses, arity} | types], acc, used, vars, preserve) do
     {clauses, used} =
       Enum.map_reduce clauses, used, fn {head, body, inferred}, used ->
-        vars = Map.merge(vars, inferred)
         {head, used} = bind_args(head, used, vars, preserve)
         {body, used} = bind(body, used, vars, preserve)
-        {{head, body, %{}}, used}
+        {{head, body, inferred}, used}
       end
     bind_each(types, [{:fn, clauses, arity} | acc], used, vars, preserve)
   end
@@ -847,28 +887,21 @@ defmodule Types do
 
       # Get all variables introduced in the function head.
       match_counters =
-        for {_, [{:var, _, counter}]} <- match, do: counter
+        for {_, [{:var, _, counter}]} <- match,
+            do: counter
 
       # We will expand all entries except the upper scope
       # and except the match counters.
-      {body, used} = bind(body, Map.drop(inferred, match_counters), preserve)
+      {body, body_used} =
+        bind(body, Map.drop(inferred, match_counters), preserve)
 
-      # The variables we need to keep from this clause are:
-      #
-      #   * all match free variables
-      #   * all used free variables
-      #   * all used match variables
-      #
-      used = Map.keys(used)
-      non_used_matched = match_counters -- used
-      non_matched_used = used -- match_counters
-
-      free_counters =
-        for counter <- non_used_matched ++ non_matched_used,
-            Map.get(inferred, counter, []) == [],
+      # We must only keep counters that are free OR have been
+      # used and are a super type.
+      match_counters =
+        for counter <- match_counters,
+            value = Map.get(inferred, counter, []),
+            value == [] or (Map.has_key?(body_used, counter) and has_supertype?(value)),
             do: counter
-
-      body_counters = (match_counters -- non_used_matched) ++ free_counters
 
       # The outer scope is going to keep all variables except
       # the ones we have been abstracting away. That's because
@@ -876,21 +909,34 @@ defmodule Types do
       # TODO: We may be able to guarantee an outer scope never
       # points to the inner one by changing unification. If so,
       # this can be Map.take(inferred, Map.keys(preserved)).
-      acc_inferred = Map.drop(inferred, body_counters)
+      acc_inferred = Map.drop(inferred, match_counters)
 
       # Go through all arguments and expand what
       # we are not keeping and is not from upstream.
-      {head, used} =
+      {head, head_used} =
         bind_args([arg], %{}, acc_inferred, preserve)
 
-      head_counters =
-        for counter <- Map.keys(used),
-            Map.get(inferred, counter, []) == [],
+      # If there are variables in the head that are not in match
+      # counters, and we have not inferred about them, we need to
+      # hoist them up.
+      hoist =
+        for counter <- Map.keys(head_used) -- match_counters,
+            not Map.has_key?(inferred, counter),
             do: counter
+
+      {head, body} =
+        case hoist do
+          [] ->
+            {head, body}
+          _ ->
+            {head, _} = traverse_args(head, hoist, &of_clauses_hoist/2)
+            {body, _} = traverse(body, hoist, &of_clauses_hoist/2)
+            {head, body}
+        end
 
       # Build our final list of bindings.
       clause_inferred =
-        for counter <- head_counters ++ body_counters,
+        for counter <- hoist ++ match_counters,
             {value, _} = bind(Map.get(inferred, counter, []), acc_inferred, preserve),
             do: {counter, value},
             into: %{}
@@ -901,6 +947,19 @@ defmodule Types do
   end
   defp of_clauses([], _state, acc_clauses, acc_state) do
     {:ok, :lists.reverse(acc_clauses), acc_state}
+  end
+
+  defp of_clauses_hoist({:fn, clauses, arity}, hoist) do
+    clauses =
+      for {head, body, inferred} <- clauses do
+        {head, _} = traverse_args(head, hoist, &of_clauses_hoist/2)
+        {body, _} = traverse(body, hoist, &of_clauses_hoist/2)
+        {head, body, Map.drop(inferred, hoist)}
+      end
+    {:replace, {:fn, clauses, arity}, hoist}
+  end
+  defp of_clauses_hoist(_, hoist) do
+    {:ok, hoist}
   end
 
   ## Blocks
@@ -918,31 +977,41 @@ defmodule Types do
   ## Vars
 
   defp of_var({:fn, clauses, arity}, counter) do
-    {[rewrite], _} = traverse([{:fn, clauses, arity}], counter, &of_var_rewrite/2)
+    {:replace, rewrite, _} =
+      of_var_rewrite({:fn, clauses, arity}, {counter, %{}})
     {:replace, rewrite, counter + 1}
   end
   defp of_var(_type, acc) do
     {:ok, acc}
   end
 
-  defp of_var_rewrite({:fn, clauses, arity}, counter) do
+  defp of_var_rewrite({:fn, clauses, arity}, {counter, rewrite} = info) do
     clauses =
       for {head, body, inferred} <- clauses do
-        {head, _} = traverse_args(head, counter, &of_var_rewrite/2)
-        {body, _} = traverse(body, counter, &of_var_rewrite/2)
-        # TODO: Once we rewrite of_clauses, nested inferred will
-        # always be empty. We should check this invariant here.
+        info = {counter, Map.merge(rewrite, inferred)}
+
+        {head, _} = traverse_args(head, info, &of_var_rewrite/2)
+        {body, _} = traverse(body, info, &of_var_rewrite/2)
+
+        # TODO: Verify this is necessary
         inferred =
-          for {k, v} <- inferred, into: %{} do
-            {v, _} = traverse(v, counter, &of_var_rewrite/2)
-            {[counter | k], v}
-          end
+          for {k, v} <- inferred,
+              {v, _} = traverse(v, info, &of_var_rewrite/2),
+              do: {[counter | k], v},
+              into: %{}
+
         {head, body, inferred}
       end
-    {:replace, {:fn, clauses, arity}, counter}
+
+    {:replace, {:fn, clauses, arity}, info}
   end
-  defp of_var_rewrite({:var, ctx, key}, counter) do
-    {:replace, {:var, ctx, [counter | key]}, counter}
+  defp of_var_rewrite({:var, ctx, key}, {counter, rewrite} = info) do
+    case rewrite do
+      %{^key => _} ->
+        {:replace, {:var, ctx, [counter | key]}, info}
+      %{} ->
+        {:ok, info}
+    end
   end
   defp of_var_rewrite(_type, counter) do
     {:ok, counter}

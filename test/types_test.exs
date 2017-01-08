@@ -227,7 +227,7 @@ defmodule TypesTest do
 
       assert quoted_of(fn x :: boolean() ->
         (fn y -> y end).(x)
-      end) |> format() == "(true | false -> true | false)"
+      end) |> format() == "(a -> a) when a: true | false"
 
       assert quoted_of(fn x ->
         fn z ->
@@ -375,6 +375,9 @@ defmodule TypesTest do
 
       assert quoted_of((y = fn x -> fn y -> x.(x.(y)) end end; {y, y})) |> format() ==
              "{((a -> b; b -> c) -> (a -> c)), ((d -> e; e -> f) -> (d -> f))}"
+
+      assert quoted_of(fn x -> z = fn y -> {x, y} end; {z, z} end) |> format() ==
+             "(a -> {(b -> {a, b}), (c -> {a, c})})"
     end
 
     test "apply with function arguments" do
@@ -556,12 +559,6 @@ defmodule TypesTest do
     end
 
     test "rank 2 inference" do
-      assert {:ok,
-              [{:fn,
-               [{_, _, %{1 => [], 2 => [], 3 => []}}],
-               1}],
-              _} = quoted_of(fn x -> fn y -> x.(x.(y)) end end)
-
       assert quoted_of(fn x -> {x.(:foo), x.(:foo)} end) |> format() ==
              "((:foo -> a) -> {a, a})"
 
@@ -592,6 +589,41 @@ defmodule TypesTest do
 
       assert {:error, _, {:recursive_fn, _, _, _}} =
              quoted_of(fn x -> x.(x) end)
+    end
+
+    test "bindings" do
+      assert quoted_of(fn x -> fn y :: atom() -> y end end) |> elem(1) ==
+             [{:fn,
+               [{[[{:var, {:x, nil}, 0}]],
+                 [{:fn,
+                   [{[[{:var, {:y, nil}, 1}]],
+                     [{:var, {:y, nil}, 1}],
+                     %{1 => [:atom]}}], 1}],
+                %{0 => []}}], 1}]
+
+      assert quoted_of(fn x -> fn y -> y end end) |> elem(1) ==
+             [{:fn,
+               [{[[{:var, {:x, nil}, 0}]],
+                 [{:fn,
+                   [{[[{:var, {:y, nil}, 1}]],
+                     [{:var, {:y, nil}, 1}],
+                     %{1 => []}}], 1}],
+                %{0 => []}}], 1}]
+
+      assert quoted_of(fn x -> fn y -> x end end) |> elem(1) ==
+             [{:fn,
+               [{[[{:var, {:x, nil}, 0}]],
+                 [{:fn,
+                   [{[[{:var, {:y, nil}, 1}]],
+                     [{:var, {:x, nil}, 0}],
+                     %{1 => []}}], 1}],
+                %{0 => []}}], 1}]
+
+      assert {:ok,
+              [{:fn,
+               [{_, _, %{1 => [], 2 => [], 3 => []}}],
+               1}],
+              _} = quoted_of(fn x -> fn y -> x.(x.(y)) end end)
     end
   end
 end
