@@ -111,7 +111,6 @@ defmodule Types do
 
   ## State helpers
 
-  # TODO: Make vars and match only keep counters
   # The :vars map keeps all Elixir variables and their types
   # The :match map keeps all Elixir variables defined in a match
   # The :inferred map keeps track of all inferred types (they have a counter)
@@ -990,11 +989,7 @@ defmodule Types do
 
         {head, _} = traverse_args(head, info, &of_var_rewrite/2)
         {body, _} = traverse(body, info, &of_var_rewrite/2)
-
-        inferred =
-          for {k, v} <- inferred,
-              do: {[counter | k], v},
-              into: %{}
+        inferred = for {k, v} <- inferred, do: {[counter | k], v}, into: %{}
 
         {head, body, inferred}
       end
@@ -1052,10 +1047,11 @@ defmodule Types do
   defp of_pattern_bound_var(meta, var_ctx, types, state) do
     %{match: match, counter: counter, inferred: inferred} = state
     case Map.fetch(match, var_ctx) do
-      {:ok, ^types} ->
-        ok(types, state)
-      {:ok, other} ->
-        error(meta, {:bound_var, var_ctx, other, types})
+      {:ok, [{:var, _, counter}] = return} ->
+        case Map.fetch!(inferred, counter) do
+          ^types -> ok(return, state)
+          other -> error(meta, {:bound_var, var_ctx, other, types})
+        end
       :error ->
         inferred = Map.put(inferred, counter, types)
         return = [{:var, var_ctx, counter}]
