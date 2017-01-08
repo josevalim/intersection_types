@@ -241,7 +241,7 @@ defmodule Types do
   defp unify_min(_, :subset), do: :subset
   defp unify_min(_, _), do: :match
 
-  defp unify_each({:var, _, key1} = left, {:var, _, key2} = right, vars, type_vars, acc_vars) do
+  defp unify_each({:var, _, key1}, {:var, _, key2} = right, vars, type_vars, acc_vars) do
     case {Map.get(vars, key1, []), Map.get(vars, key2, [])} do
       {[], _} ->
         acc_vars = Map.put(acc_vars, key2, Map.get(type_vars, key2, []))
@@ -249,12 +249,13 @@ defmodule Types do
          right,
          Map.update(type_vars, key1, [right], &union(&1, [right])),
          Map.update(acc_vars, key1, [right], &union(&1, [right]))}
-      {_, []} ->
-        acc_vars = Map.put(acc_vars, key1, Map.get(type_vars, key1, []))
+      {left_value, []} ->
+        type_vars = Map.update(type_vars, key2, left_value, &union(&1, left_value))
+        acc_vars = Map.update(acc_vars, key2, left_value, &union(&1, left_value))
         {:match,
          right,
-         Map.update(type_vars, key2, [left], &union(&1, [left])),
-         Map.update(acc_vars, key2, [left], &union(&1, [left]))}
+         Map.update(type_vars, key1, [right], &union(&1 -- left_value, [right])),
+         Map.update(acc_vars, key1, [right], &union(&1 -- left_value, [right]))}
       {left_value, right_value} ->
         with {_, [_ | _] = match, type_vars, acc_vars} <-
                unify(left_value, right_value, vars, type_vars, acc_vars) do
@@ -906,9 +907,6 @@ defmodule Types do
       # The outer scope is going to keep all variables except
       # the ones we have been abstracting away. That's because
       # an outer scope may be pointing to an inner scope.
-      # TODO: We may be able to guarantee an outer scope never
-      # points to the inner one by changing unification. If so,
-      # this can be Map.take(inferred, Map.keys(preserved)).
       acc_inferred = Map.drop(inferred, match_counters)
 
       # Go through all arguments and expand what
@@ -993,10 +991,8 @@ defmodule Types do
         {head, _} = traverse_args(head, info, &of_var_rewrite/2)
         {body, _} = traverse(body, info, &of_var_rewrite/2)
 
-        # TODO: Verify this is necessary
         inferred =
           for {k, v} <- inferred,
-              {v, _} = traverse(v, info, &of_var_rewrite/2),
               do: {[counter | k], v},
               into: %{}
 

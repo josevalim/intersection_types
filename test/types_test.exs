@@ -223,7 +223,7 @@ defmodule TypesTest do
 
       assert quoted_of(fn x ->
         (fn y :: boolean() -> y end).(x)
-      end) |> format() == "(true | false -> true | false)"
+      end) |> format() == "(a -> a) when a: true | false"
 
       assert quoted_of(fn x :: boolean() ->
         (fn y -> y end).(x)
@@ -234,7 +234,7 @@ defmodule TypesTest do
           (fn y :: boolean() -> y end).(x)
         end
         x
-      end) |> format() == "(true | false -> true | false)"
+      end) |> format() == "(a -> a) when a: true | false"
 
       assert quoted_of(fn x ->
         (fn true -> true end).(x)
