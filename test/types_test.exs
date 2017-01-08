@@ -151,13 +151,49 @@ defmodule TypesTest do
   #   assert Types.intersection(left, right) == {[], [], left}
   # end
 
-  describe "unify/4" do
+  describe "unify/5" do
     test "unions" do
-      assert Types.unify([{:var, {:x, Elixir}, 0}], [:atom, :integer], %{}, %{}) ==
+      assert Types.unify([{:var, {:x, Elixir}, 0}], [:atom, :integer], [], %{}, %{}) ==
              {:match, [:atom, :integer], %{0 => [:atom, :integer]}, %{0 => [:atom, :integer]}}
 
-      assert Types.unify([:atom, :integer], [{:var, {:x, Elixir}, 0}], %{}, %{}) ==
+      assert Types.unify([:atom, :integer], [{:var, {:x, Elixir}, 0}], [], %{}, %{}) ==
              {:match, [{:var, {:x, Elixir}, 0}], %{0 => [:atom, :integer]}, %{0 => [:atom, :integer]}}
+    end
+
+    test "tuple root unions" do
+      assert Types.unify([{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
+                         [{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
+                         [], %{}, %{}) ==
+             {:match,
+              [{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
+              %{0 => [:atom, :integer]},
+              %{0 => [:atom, :integer]}}
+
+      assert Types.unify([{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
+                         [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
+                         [], %{}, %{}) ==
+             {:match,
+              [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
+              %{0 => [:atom, :integer]},
+              %{0 => [:atom, :integer]}}
+    end
+
+    test "tuple args unions" do
+      assert Types.unify([{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
+                         [{:tuple, [[:atom, :integer]], 1}],
+                         [], %{}, %{}) ==
+             {:match,
+              [{:tuple, [[:atom, :integer]], 1}],
+              %{0 => [:atom, :integer]},
+              %{0 => [:atom, :integer]}}
+
+      assert Types.unify([{:tuple, [[:atom, :integer]], 1}],
+                         [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
+                         [], %{}, %{}) ==
+             {:match,
+              [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
+              %{0 => [:atom, :integer]},
+              %{0 => [:atom, :integer]}}
     end
 
     test "either" do
@@ -168,22 +204,18 @@ defmodule TypesTest do
       left  = {:tuple, [[{:value, :left}], [:atom]], 2}
       right = {:tuple, [[{:value, :right}], [:integer]], 2}
 
-      assert Types.unify(pattern, [left, right], %{}, %{}) ==
-             {:match, [right, left], %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
+      assert Types.unify(pattern, [left, right], [0, 1], %{}, %{}) ==
+             {:match, [left, right], %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
 
-      assert Types.unify(pattern, [left, right, :atom], %{}, %{}) ==
-             {:disjoint, [right, left], %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
+      assert Types.unify(pattern, [left, right, :atom], [0, 1], %{}, %{}) ==
+             {:disjoint, [left, right], %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
 
       # This pattern requires the same type across left and right.
       pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
                  {:tuple, [[{:value, :right}], [{:var, {:x, nil}, 0}]], 2}]
 
-      assert Types.unify(pattern, [left, right], %{}, %{}) ==
+      assert Types.unify(pattern, [left, right], [0, 1], %{}, %{}) ==
              {:disjoint, [left], %{0 => [:atom]}, %{0 => [:atom]}}
-
-      # The opposite should also fail.
-      assert Types.unify([left, right], pattern, %{}, %{}) ==
-             {:disjoint,  [hd(pattern)], %{0 => [:atom]}, %{0 => [:atom]}}
     end
   end
 
