@@ -154,7 +154,6 @@ defmodule Types do
   # :atom
 
   # TODO: Use inline_list_funcs for performance.
-  # TODO: Implement generic type traversal functions.
 
   @doc """
   Converts the given Type AST to its inner type.
@@ -446,17 +445,12 @@ defmodule Types do
     case value do
       [] ->
         case Map.get(vars, key, []) do
-          {:recursive, existing} ->
-            raise "type checker found undetected recursive definition " <>
-                  "when binding #{inspect type} to #{inspect existing}"
           [] ->
             bind_each(types, [type | acc], used, vars, preserve)
           existing when is_list(existing) ->
-            # TODO: union only works with bind if variables are guaranteed
-            # to stay at the end, so we need to support such on unify.
-            {existing, used} =
-              bind_each(existing, [], used, Map.put(vars, key, {:recursive, existing}), preserve)
-            bind_each(types, union(existing, acc), used, vars, preserve)
+            {existing, used} = bind_each(existing, [], used, vars, preserve)
+            {types, used} = bind_each(types, acc, used, vars, preserve)
+            {union(existing, types), used}
         end
       _ ->
         bind_each(types, [type | acc], used, vars, preserve)
@@ -706,7 +700,6 @@ defmodule Types do
   end
 
   # TODO: Support multiple args
-  # TODO: Support call merging
   defp of({{:., _, [fun]}, meta, args}, state) do
     with {:ok, fun, fun_state} <- of(fun, state),
          {:ok, args, arity, state} <- args(args, replace_vars(fun_state, state), &of/2) do
