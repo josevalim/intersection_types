@@ -2,12 +2,15 @@ defmodule TypesTest do
   use ExUnit.Case, async: true
 
   defp types({:ok, types, %{inferred: inferred}}) do
-    Types.bind(types, inferred, %{})
+    types
+    |> Types.bind(inferred, %{})
+    |> elem(0)
   end
 
   defp format({:ok, types, %{inferred: inferred}}) do
     types
     |> Types.bind(inferred, %{})
+    |> elem(0)
     |> Types.types_to_algebra()
     |> Inspect.Algebra.format(:infinity)
     |> IO.iodata_to_binary()
@@ -224,6 +227,13 @@ defmodule TypesTest do
 
       assert quoted_of(fn x :: boolean() ->
         (fn y -> y end).(x)
+      end) |> format() == "(true | false -> true | false)"
+
+      assert quoted_of(fn x ->
+        fn z ->
+          (fn y :: boolean() -> y end).(x)
+        end
+        x
       end) |> format() == "(true | false -> true | false)"
 
       assert quoted_of(fn x ->
@@ -546,6 +556,12 @@ defmodule TypesTest do
     end
 
     test "rank 2 inference" do
+      assert {:ok,
+              [{:fn,
+               [{_, _, %{1 => [], 2 => [], 3 => []}}],
+               1}],
+              _} = quoted_of(fn x -> fn y -> x.(x.(y)) end end)
+
       assert quoted_of(fn x -> {x.(:foo), x.(:foo)} end) |> format() ==
              "((:foo -> a) -> {a, a})"
 

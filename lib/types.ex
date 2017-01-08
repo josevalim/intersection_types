@@ -95,8 +95,7 @@ defmodule Types do
   # The :vars map keeps all Elixir variables and their types
   # The :match map keeps all Elixir variables defined in a match
   # The :inferred map keeps track of all inferred types (they have a counter)
-  # The :var_apply map keeps track of all var apply free variables
-  @state %{vars: %{}, match: %{}, inferred: %{}, var_apply: %{}, counter: 0}
+  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0}
 
   defp replace_vars(state, %{vars: vars}) do
     %{state | vars: vars}
@@ -345,7 +344,7 @@ defmodule Types do
 
     with {kind, _, fun_type, fun_acc} when kind != :disjoint <-
            unify_args(left_head, right_head, fun_vars, fun_type, fun_acc),
-         right_body =
+         {right_body, _} =
            bind(right_body, fun_type, type_vars),
          {:match, _, fun_type, fun_acc} <-
            unify(left_body, right_body, fun_type, fun_type, fun_acc) do
@@ -373,57 +372,66 @@ defmodule Types do
   introduced by themselves.
   """
   def bind(types, vars, preserve \\ %{}) do
-    :lists.reverse(bind_each(types, [], vars, preserve))
+    bind(types, %{}, vars, preserve)
   end
 
-  defp bind_each([{:fn, clauses, arity} | types], acc, vars, preserve) do
-    clauses =
-      for {head, body, inferred} <- clauses do
-        # It is ok to merge the inferred because generated functions
-        # only have inferred entries at the top-level. Therefore this
-        # will be a no-op for most cases.
-        # TODO: The lower precedence should not matter if inferred
-        # was correctly cleaned up.
-        vars = Map.merge(inferred, vars)
-        {bind_args(head, vars, preserve), bind(body, vars, preserve), inferred}
-      end
-    bind_each(types, [{:fn, clauses, arity} | acc], vars, preserve)
+  defp bind([], used, _vars, _preserve) do
+    {[], used}
   end
-  defp bind_each([{:var, ctx, key} = type | types], acc, vars, preserve) do
-    case Map.get(preserve, key, []) do
+  defp bind(types, used, vars, preserve) do
+    {types, used} = bind_each(types, [], used, vars, preserve)
+    {:lists.reverse(types), used}
+  end
+
+  defp bind_each([{:fn, clauses, arity} | types], acc, used, vars, preserve) do
+    {clauses, used} =
+      Enum.map_reduce clauses, used, fn {head, body, inferred}, used ->
+        vars = Map.merge(vars, inferred)
+        {head, used} = bind_args(head, used, vars, preserve)
+        {body, used} = bind(body, used, vars, preserve)
+        {{head, body, %{}}, used}
+      end
+    bind_each(types, [{:fn, clauses, arity} | acc], used, vars, preserve)
+  end
+  defp bind_each([{:var, _, key} = type | types], acc, used, vars, preserve) do
+    {value, used} =
+      case Map.fetch(preserve, key) do
+        :error -> {[], Map.put(used, key, true)}
+        {:ok, val} -> {val, used}
+      end
+
+    case value do
       [] ->
         case Map.get(vars, key, []) do
           {:recursive, existing} ->
             raise "type checker found undetected recursive definition " <>
                   "when binding #{inspect type} to #{inspect existing}"
           [] ->
-            bind_each(types, [type | acc], vars, preserve)
+            bind_each(types, [type | acc], used, vars, preserve)
           existing when is_list(existing) ->
             # TODO: union only works with bind if variables are guaranteed
             # to stay at the end, so we need to support such on unify.
-            existing = bind_each(existing, [], Map.put(vars, key, {:recursive, existing}), preserve)
-            bind_each(types, union(existing, acc), vars, preserve)
-          other ->
-            existing = [{:var, ctx, other}]
-            existing = bind_each(existing, [], Map.put(vars, key, {:recursive, existing}), preserve)
-            bind_each(types, union(existing, acc), vars, preserve)
+            {existing, used} =
+              bind_each(existing, [], used, Map.put(vars, key, {:recursive, existing}), preserve)
+            bind_each(types, union(existing, acc), used, vars, preserve)
         end
       _ ->
-        bind_each(types, [type | acc], vars, preserve)
+        bind_each(types, [type | acc], used, vars, preserve)
     end
   end
-  defp bind_each([{:tuple, args, arity} | types], acc, vars, preserve) do
-    bind_each(types, [{:tuple, bind_args(args, vars, preserve), arity} | acc], vars, preserve)
+  defp bind_each([{:tuple, args, arity} | types], acc, used, vars, preserve) do
+    {args, used} = bind_args(args, used, vars, preserve)
+    bind_each(types, [{:tuple, args, arity} | acc], used, vars, preserve)
   end
-  defp bind_each([type | types], acc, vars, preserve) do
-    bind_each(types, [type | acc], vars, preserve)
+  defp bind_each([type | types], acc, used, vars, preserve) do
+    bind_each(types, [type | acc], used, vars, preserve)
   end
-  defp bind_each([], acc, _vars, _preserve) do
-    acc
+  defp bind_each([], acc, used, _vars, _preserve) do
+    {acc, used}
   end
 
-  defp bind_args(args, vars, preserve) do
-    Enum.map(args, &bind(&1, vars, preserve))
+  defp bind_args(args, used, vars, preserve) do
+    Enum.map_reduce(args, used, &bind(&1, &2, vars, preserve))
   end
 
   @doc """
@@ -687,7 +695,7 @@ defmodule Types do
   ### Var apply
 
   defp of_var_apply(var_ctx, var_counter, meta, [arg_types], arity, state) do
-    %{inferred: inferred, counter: counter, var_apply: var_apply} = state
+    %{inferred: inferred, counter: counter} = state
 
     if of_var_apply_has_counter?([arg_types], var_counter) do
       error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], arg_types, arity})
@@ -695,7 +703,7 @@ defmodule Types do
       case of_var_apply_unify(var_counter, [arg_types], arity, inferred) do
         {:match, types, return} ->
           inferred = Map.put(inferred, var_counter, types)
-          ok(return, %{state | inferred: inferred, var_apply: var_apply})
+          ok(return, %{state | inferred: inferred})
         {:nomatch, []} ->
           :error
         {:nomatch, types} ->
@@ -703,12 +711,11 @@ defmodule Types do
 
           types =
             for {:fn, clauses, arity} <- types do
-              {:fn, of_var_apply_clauses(clauses, [arg_types], return), arity}
+              {:fn, of_var_apply_clauses(clauses, [arg_types], return, counter), arity}
             end
 
           inferred = Map.put(inferred, var_counter, types)
-          var_apply = Map.update(var_apply, var_counter, [counter], &[counter | &1])
-          ok(return, %{state | inferred: inferred, counter: counter + 1, var_apply: var_apply})
+          ok(return, %{state | inferred: inferred, counter: counter + 1})
       end
     end
   end
@@ -742,12 +749,12 @@ defmodule Types do
     end
   end
 
-  defp of_var_apply_clauses(clauses, args, return) do
+  defp of_var_apply_clauses(clauses, args, return, counter) do
     {pre, pos} =
       Enum.split_while(clauses, fn {head, _, _} ->
         qualify_args(head, args, %{}, :equal) |> elem(0) != :superset
       end)
-    pre ++ [{args, return, %{}} | pos]
+    pre ++ [{args, return, %{counter => []}} | pos]
   end
 
   ### Fn Apply
@@ -833,34 +840,63 @@ defmodule Types do
 
   defp of_clauses([{:->, _, [[arg], body]} | clauses],
                    %{inferred: preserve} = state, acc_clauses, acc_state) do
-    with {:ok, head, %{match: match, vars: vars} = acc_state} <- of_pattern(arg, acc_state),
-         acc_state = %{acc_state | vars: Map.merge(match, vars)},
-         {:ok, body, %{inferred: inferred, var_apply: var_apply} = acc_state} <- of(body, acc_state) do
+    with {:ok, arg, %{match: match, vars: vars} = acc_state} <- of_pattern(arg, acc_state),
+         acc_state = %{acc_state | vars: Map.merge(vars, match)},
+         {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state) do
       acc_state = replace_vars(acc_state, state)
-      {acc_inferred, clause_inferred} = Map.split(inferred, Map.keys(preserve))
 
-      # TODO: Today we return all inferred variables but we are only
-      # interested in the ones that are part of the head or of the
-      # return. Furthermore, any variable in the head and not in the
-      # return must be expanded. And any variable in the body and not
-      # in the head as well. Unless, of course, the variable is free,
-      # then it should remain as is.
+      # Get all variables introduced in the function head.
+      match_counters =
+        for {_, [{:var, _, counter}]} <- match, do: counter
+
+      # We will expand all entries except the upper scope
+      # and except the match counters.
+      {body, used} = bind(body, Map.drop(inferred, match_counters), preserve)
+
+      # The variables we need to keep from this clause are:
       #
-      # This should also remove any inferred type from any inner
-      # function, which should simplify both generalization and
-      # unification as we will need to look only to the outermost
-      # function.
+      #   * all match free variables
+      #   * all used free variables
+      #   * all used match variables
+      #
+      used = Map.keys(used)
+      non_used_matched = match_counters -- used
+      non_matched_used = used -- match_counters
 
-      # TODO: Refactor me
-      clause_inferred = Enum.reduce(match, clause_inferred, fn {_, [{:var, _, var_counter}]}, acc ->
-        if counters = Map.get(var_apply, var_counter) do
-          Enum.reduce(counters, acc, &Map.put(&2, &1, Map.get(inferred, &1, [])))
-        else
-          acc
-        end
-      end)
+      free_counters =
+        for counter <- non_used_matched ++ non_matched_used,
+            Map.get(inferred, counter, []) == [],
+            do: counter
+
+      body_counters = (match_counters -- non_used_matched) ++ free_counters
+
+      # The outer scope is going to keep all variables except
+      # the ones we have been abstracting away. That's because
+      # an outer scope may be pointing to an inner scope.
+      # TODO: We may be able to guarantee an outer scope never
+      # points to the inner one by changing unification. If so,
+      # this can be Map.take(inferred, Map.keys(preserved)).
+      acc_inferred = Map.drop(inferred, body_counters)
+
+      # Go through all arguments and expand what
+      # we are not keeping and is not from upstream.
+      {head, used} =
+        bind_args([arg], %{}, acc_inferred, preserve)
+
+      head_counters =
+        for counter <- Map.keys(used),
+            Map.get(inferred, counter, []) == [],
+            do: counter
+
+      # Build our final list of bindings.
+      clause_inferred =
+        for counter <- head_counters ++ body_counters,
+            {value, _} = bind(Map.get(inferred, counter, []), acc_inferred, preserve),
+            do: {counter, value},
+            into: %{}
+
       acc_state = %{acc_state | inferred: acc_inferred}
-      of_clauses(clauses, state, [{[head], body, clause_inferred} | acc_clauses], acc_state)
+      of_clauses(clauses, state, [{head, body, clause_inferred} | acc_clauses], acc_state)
     end
   end
   defp of_clauses([], _state, acc_clauses, acc_state) do
