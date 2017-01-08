@@ -152,8 +152,16 @@ defmodule TypesTest do
   # end
 
   describe "unify/4" do
+    test "unions" do
+      assert Types.unify([{:var, {:x, Elixir}, 0}], [:atom, :integer], %{}, %{}) ==
+             {:match, [:atom, :integer], %{0 => [:atom, :integer]}, %{0 => [:atom, :integer]}}
+
+      assert Types.unify([:atom, :integer], [{:var, {:x, Elixir}, 0}], %{}, %{}) ==
+             {:match, [{:var, {:x, Elixir}, 0}], %{0 => [:atom, :integer]}, %{0 => [:atom, :integer]}}
+    end
+
     test "either" do
-      # This pattern requires different types across left and right.
+      # This pattern accepts different types across left and right.
       pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
                  {:tuple, [[{:value, :right}], [{:var, {:y, nil}, 1}]], 2}]
 
@@ -329,8 +337,8 @@ defmodule TypesTest do
     # Although rank 2 intersection types do not require let polymorphism,
     # we implement them to avoid having to rearrange ASTs into let formats.
     # Papers such as "Let should not be generalized" argue against this
-    # in terms of simplicity on type systems that have constraints (we
-    # haven't reached such trade-offs yet).
+    # in terms of simplicity on type systems that have constraints (although
+    # we haven't reached such trade-offs yet).
     test "apply on variable" do
       assert {:error, _, {:disjoint_apply, _, _, _}} =
         quoted_of((
