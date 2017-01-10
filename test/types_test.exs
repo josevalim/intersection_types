@@ -513,54 +513,41 @@ defmodule TypesTest do
         end)
     end
 
-    test "apply with rank-2 function argument" do
-      # (a -> b) match
+    test "apply with function argument and argument inference" do
+      # ((a -> b) -> (a -> b)) match
       assert quoted_of((fn x -> fn y -> x.(y) end end).
                        (fn :foo -> :bar end)) |> format() ==
-                       "(:foo -> :bar)"
+             "(:foo -> :bar)"
 
-      # (a -> b) superset
+      # ((a -> b) -> (a -> b)) superset
       assert quoted_of((fn x -> fn y -> x.(y) end end).
                        (fn x :: atom() -> x end)) |> format() ==
-                       "(atom() -> atom())"
+             "(atom() -> atom())"
 
-      # (a -> b) multiple clauses
+      # ((a -> b) -> (a -> b)) multiple clauses
       assert quoted_of((fn x -> fn y -> x.(y) end end).
                        (fn :foo -> :bar; :bar -> :bat end)) |> format() ==
-                       "(:foo | :bar -> :bar | :bat)"
+             "(:foo | :bar -> :bar | :bat)"
 
-      # (a -> b; b -> c) match
+      # ((a -> a) -> (a -> a)) match
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                       (fn :foo -> :bar; :bar -> :baz end)) |> format() ==
-             "(:foo -> :baz)"
+                       (fn :foo -> :foo end)) |> format() ==
+             "(:foo -> :foo)"
 
-      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                       (fn :bar -> :baz; :foo -> :bar end)) |> format() ==
-             "(:foo -> :baz)"
-
-      # (a -> b; b -> c) superset
-      # assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-      #                  (fn x :: atom() -> x end)) |> format() ==
-      #                  "(atom() -> atom())"
-
-      # (a -> b; b -> c) no match
+      # ((a -> a) -> (a -> a)) no match
       assert {:error, _, {:disjoint_apply, _, _, _}} =
                quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                         (fn :foo -> :bar; :baz -> :bat end))
+                         (fn :foo -> :bar; :bar -> :baz end))
 
-      assert {:error, _, {:disjoint_apply, _, _, _}} =
-               quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                         (fn :foo -> :bar end))
+      # ((a -> a) -> (a -> a)) superset
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn x :: atom() -> x end)) |> format() ==
+             "(atom() -> atom())"
 
       # (a -> b; b -> c) multiple clauses
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                       (fn :foo -> :bar; :bar -> :baz; :never -> :match end)) |> format() ==
-             "(:foo -> :baz)"
-
-      # (a -> b; b -> c) multiple matches
-      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                       (fn :foo -> :bar; :bar -> :baz; :baz -> :bar end)) |> format() ==
-             "(:foo -> :baz; :baz -> :baz)"
+                       (fn :foo -> :foo; :bar -> :bar; :no -> :match end)) |> format() ==
+             "(:foo | :bar -> :foo | :bar)"
     end
   end
 
