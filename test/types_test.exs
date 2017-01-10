@@ -253,7 +253,7 @@ defmodule TypesTest do
              "{(a -> {(b -> b), (c -> c)}), (d -> {(e -> e), (f -> f)})}"
 
       assert quoted_of((y = fn x -> fn y -> x.(x.(y)) end end; {y, y})) |> format() ==
-             "{((a -> b; b -> c) -> (a -> c)), ((d -> e; e -> f) -> (d -> f))}"
+              "{((a -> a) -> (a -> a)), ((b -> b) -> (b -> b))}"
 
       assert quoted_of(fn x -> z = fn y -> {x, y} end; {z, z} end) |> format() ==
              "(a -> {(b -> {a, b}), (c -> {a, c})})"
@@ -631,6 +631,15 @@ defmodule TypesTest do
 
       assert quoted_of(fn x -> fn y -> x end end) |> format() ==
              "(a -> (b -> a))"
+
+      assert quoted_of(fn x -> x.(fn y -> y end) end) |> format() ==
+             "(((a -> a) -> b) -> b)"
+
+      assert quoted_of(fn x -> fn y -> x.(y) end end) |> format() ==
+             "((a -> b) -> (a -> b))"
+
+      assert quoted_of(fn x -> fn y -> y.(x) end end) |> format() ==
+             "(a -> ((a -> b) -> b))"
     end
 
     test "rank 2 inference" do
@@ -640,11 +649,8 @@ defmodule TypesTest do
       assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> format() ==
              "((:foo -> a; :bar -> b) -> {a, b})"
 
-      assert quoted_of(fn x -> x.(fn y -> y end) end) |> format() ==
-             "(((a -> a) -> b) -> b)"
-
       assert quoted_of(fn x -> fn y -> x.(x.(y)) end end) |> format() ==
-             "((a -> b; b -> c) -> (a -> c))"
+             "((a -> a) -> (a -> a))"
 
       # TODO: Reintroduce those when we have multiple arguments.
       # assert quoted_of((fn x ->
@@ -696,9 +702,15 @@ defmodule TypesTest do
 
       assert {:ok,
               [{:fn,
-               [{_, _, %{1 => [], 2 => [], 3 => []}}],
+               [{_, _, %{2 => []}}],
                1}],
               _} = quoted_of(fn x -> fn y -> x.(x.(y)) end end)
+
+      assert {:ok,
+              [{:fn,
+               [{_, _, %{3 => []}}],
+               1}],
+              _} = quoted_of(fn x -> fn y -> fn z -> x.(x.(z)) end end end)
     end
   end
 end

@@ -117,7 +117,7 @@ defmodule Types do
   # The :vars map keeps all Elixir variables and their types
   # The :match map keeps all Elixir variables defined in a match
   # The :inferred map keeps track of all inferred types (they have a counter)
-  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0}
+  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0, var_apply: %{}}
 
   defp replace_vars(state, %{vars: vars}) do
     %{state | vars: vars}
@@ -262,6 +262,10 @@ defmodule Types do
   defp unify_min(:subset, _), do: :subset
   defp unify_min(_, :subset), do: :subset
   defp unify_min(_, _), do: :match
+
+  defp unify_each(type, type, _keep, _vars, type_vars, acc_vars) do
+    {:match, type_vars, acc_vars}
+  end
 
   defp unify_each({:var, _, key1}, {:var, _, key2} = right, _keep, vars, type_vars, acc_vars) do
     case {Map.get(vars, key1, []), Map.get(vars, key2, [])} do
@@ -746,13 +750,13 @@ defmodule Types do
   ### Var apply
 
   defp of_var_apply(var_ctx, var_counter, meta, [arg_types], arity, state) do
-    %{inferred: inferred, counter: counter} = state
+    %{inferred: inferred, counter: counter, var_apply: var_apply} = state
 
     if of_var_apply_has_counter?([arg_types], var_counter) do
       error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], arg_types, arity})
     else
       case of_var_apply_unify(var_counter, [arg_types], arity, inferred) do
-        {:match, types, return} ->
+        {:match, types, return, inferred} ->
           inferred = Map.put(inferred, var_counter, types)
           ok(return, %{state | inferred: inferred})
         {:nomatch, []} ->
@@ -762,11 +766,18 @@ defmodule Types do
 
           types =
             for {:fn, clauses, arity} <- types do
-              {:fn, of_var_apply_clauses(clauses, [arg_types], return, counter), arity}
+              {:fn, of_var_apply_clauses(clauses, [arg_types], return), arity}
             end
 
-          inferred = Map.put(inferred, var_counter, types)
-          ok(return, %{state | inferred: inferred, counter: counter + 1})
+          inferred =
+            inferred
+            |> Map.put(counter, [])
+            |> Map.put(var_counter, types)
+
+          var_apply =
+            Map.update(var_apply, var_counter, [counter], &[counter | &1])
+
+          ok(return, %{state | inferred: inferred, counter: counter + 1, var_apply: var_apply})
       end
     end
   end
@@ -785,27 +796,38 @@ defmodule Types do
       existing ->
         funs = for {:fn, _, ^arity} = fun <- existing, do: fun
 
-        return =
-          Enum.reduce(funs, [], fn {:fn, clauses, _}, sum ->
-            Enum.reduce(clauses, sum, fn
-              {^args, return, _}, sum -> union(sum, return)
-              {_, _, _}, sum -> sum
-            end)
-          end)
-
-        case return do
-          [] -> {:nomatch, funs}
-          _ -> {:match, funs, return}
+        case of_var_apply_fn(funs, args, inferred, inferred) do
+          {return, inferred} -> {:match, funs, return, inferred}
+          :error -> {:nomatch, funs}
         end
     end
   end
 
-  defp of_var_apply_clauses(clauses, args, return, counter) do
+  defp of_var_apply_fn([{:fn, clauses, _} | funs], args, inferred, acc_inferred) do
+    of_var_apply_fn(clauses, funs, args, inferred, acc_inferred)
+  end
+  defp of_var_apply_fn([], _args, _inferred, _acc_inferred) do
+    :error
+  end
+
+  defp of_var_apply_fn([{head, body, _} | clauses], funs, args, inferred, acc_inferred) do
+    case unify_args(head, args, [], inferred, inferred, acc_inferred) do
+      {:match, _, _, acc_inferred} ->
+        {body, acc_inferred}
+      _ ->
+        of_var_apply_fn(clauses, funs, args, inferred, acc_inferred)
+    end
+  end
+  defp of_var_apply_fn([], funs, args, inferred, acc_inferred) do
+    of_var_apply_fn(funs, args, inferred, acc_inferred)
+  end
+
+  defp of_var_apply_clauses(clauses, args, return) do
     {pre, pos} =
       Enum.split_while(clauses, fn {head, _, _} ->
         qualify_args(head, args, %{}, :equal) |> elem(0) != :superset
       end)
-    pre ++ [{args, return, %{counter => []}} | pos]
+    pre ++ [{args, return, %{}} | pos]
   end
 
   ### Fn Apply
@@ -900,12 +922,14 @@ defmodule Types do
                    %{inferred: preserve} = state, acc_clauses, acc_state) do
     with {:ok, arg, %{match: match, vars: vars} = acc_state} <- of_pattern(arg, acc_state),
          acc_state = %{acc_state | vars: Map.merge(vars, match)},
-         {:ok, body, %{inferred: inferred} = acc_state} <- of(body, acc_state) do
+         {:ok, body, acc_state} <- of(body, acc_state) do
       acc_state = replace_vars(acc_state, state)
+      %{inferred: inferred, var_apply: var_apply} = acc_state
 
       # Get all variables introduced in the function head.
       match_counters =
-        for {_, [{:var, _, counter}]} <- match,
+        for {_, [{:var, _, key}]} <- match,
+            counter <- [key | Map.get(var_apply, key, [])],
             do: counter
 
       # We will expand all entries except the upper scope
@@ -928,30 +952,12 @@ defmodule Types do
 
       # Go through all arguments and expand what
       # we are not keeping and is not from upstream.
-      {head, head_used} =
+      {head, _} =
         bind_args([arg], %{}, acc_inferred, preserve)
-
-      # If there are variables in the head that are not in match
-      # counters, and we have not inferred about them, we need to
-      # hoist them up.
-      hoist =
-        for counter <- Map.keys(head_used) -- match_counters,
-            not Map.has_key?(inferred, counter),
-            do: counter
-
-      {head, body} =
-        case hoist do
-          [] ->
-            {head, body}
-          _ ->
-            {head, _} = traverse_args(head, hoist, &of_clauses_hoist/2)
-            {body, _} = traverse(body, hoist, &of_clauses_hoist/2)
-            {head, body}
-        end
 
       # Build our final list of bindings.
       clause_inferred =
-        for counter <- hoist ++ match_counters,
+        for counter <- match_counters,
             {value, _} = bind(Map.get(inferred, counter, []), acc_inferred, preserve),
             do: {counter, value},
             into: %{}
@@ -962,19 +968,6 @@ defmodule Types do
   end
   defp of_clauses([], _state, acc_clauses, acc_state) do
     {:ok, :lists.reverse(acc_clauses), acc_state}
-  end
-
-  defp of_clauses_hoist({:fn, clauses, arity}, hoist) do
-    clauses =
-      for {head, body, inferred} <- clauses do
-        {head, _} = traverse_args(head, hoist, &of_clauses_hoist/2)
-        {body, _} = traverse(body, hoist, &of_clauses_hoist/2)
-        {head, body, Map.drop(inferred, hoist)}
-      end
-    {:replace, {:fn, clauses, arity}, hoist}
-  end
-  defp of_clauses_hoist(_, hoist) do
-    {:ok, hoist}
   end
 
   ## Blocks
