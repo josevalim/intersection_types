@@ -222,13 +222,13 @@ defmodule Types do
   defp unify(left, [{key, type} | types], keep, vars, type_vars, acc_vars,
              lefties, righties, unmatched) do
     case unify_each(left, type, keep, vars, type_vars, acc_vars) do
-      {:match, _, type_vars, acc_vars} ->
+      {:match, type_vars, acc_vars} ->
         unify(left, types, keep, vars, type_vars, acc_vars,
               lefties, righties, Map.put(unmatched, key, {:match, type}))
       {:subset, type, type_vars, acc_vars} ->
         unify(left, types, keep, vars, type_vars, acc_vars,
               lefties, righties, Map.put_new(unmatched, key, {:subset, type}))
-      {:disjoint, _, _, _} ->
+      :disjoint ->
         unify(left, types, keep, vars, type_vars, acc_vars,
               lefties, righties, unmatched)
     end
@@ -267,26 +267,26 @@ defmodule Types do
     case {Map.get(vars, key1, []), Map.get(vars, key2, [])} do
       {[], _} ->
         acc_vars = Map.put(acc_vars, key2, Map.get(type_vars, key2, []))
+        # TODO: update is likely not required. Try doing nothing or put.
         {:match,
-         right,
          Map.update(type_vars, key1, [right], &union(&1, [right])),
          Map.update(acc_vars, key1, [right], &union(&1, [right]))}
       {left_value, []} ->
         type_vars = Map.update(type_vars, key2, left_value, &union(&1, left_value))
         acc_vars = Map.update(acc_vars, key2, left_value, &union(&1, left_value))
+        # TODO: update is likely not required. Try doing nothing or put.
         {:match,
-         right,
          Map.update(type_vars, key1, [right], &union(&1 -- left_value, [right])),
          Map.update(acc_vars, key1, [right], &union(&1 -- left_value, [right]))}
     end
   end
 
-  defp unify_each({:var, _, key}, right, keep, vars, type_vars, acc_vars) do
-    unify_var(key, right, keep, vars, type_vars, acc_vars)
+  defp unify_each({:var, _, key}, type, keep, vars, type_vars, acc_vars) do
+    unify_var(key, type, keep, vars, type_vars, acc_vars)
   end
 
-  defp unify_each(left, {:var, _, key}, keep, vars, type_vars, acc_vars) do
-    unify_var(key, left, keep, vars, type_vars, acc_vars)
+  defp unify_each(type, {:var, _, key}, keep, vars, type_vars, acc_vars) do
+    unify_var(key, type, keep, vars, type_vars, acc_vars)
   end
 
   defp unify_each({:fn, lefties, arity}, {:fn, righties, arity},
@@ -296,64 +296,50 @@ defmodule Types do
 
   defp unify_each({:tuple, lefties, arity}, {:tuple, righties, arity},
                   keep, vars, type_vars, acc_vars) do
-    with {kind, args, type_vars, acc_vars} <-
-           unify_args(lefties, righties, keep, vars, type_vars, acc_vars) do
-      {kind, {:tuple, args, arity}, type_vars, acc_vars}
+    case unify_args(lefties, righties, keep, vars, type_vars, acc_vars) do
+      {:match, _, type_vars, acc_vars} ->
+        {:match, type_vars, acc_vars}
+      {:subset, args, type_vars, acc_vars} ->
+        {:subset, {:tuple, :lists.reverse(args), arity}, type_vars, acc_vars}
+      {:disjoint, _, _, _} ->
+        :disjoint
     end
   end
 
   defp unify_each(left, right, _keep, _vars, type_vars, acc_vars) do
     case qualify(left, right, %{}) do
-      {:equal, _} -> {:match, right, type_vars, acc_vars}
-      {:superset, _} -> {:match, right, type_vars, acc_vars}
+      {:equal, _} -> {:match, type_vars, acc_vars}
+      {:superset, _} -> {:match, type_vars, acc_vars}
       {:subset, _} -> {:subset, left, type_vars, acc_vars}
-      {:disjoint, _} -> {:disjoint, right, type_vars, acc_vars}
+      {:disjoint, _} -> :disjoint
     end
-  end
-
-  defp unify_args(lefties, righties, keep, vars, type_vars, acc_vars) do
-    unify_args(lefties, righties, keep, vars, type_vars, acc_vars, :match, [])
-  end
-
-  defp unify_args([left | lefties], [right | righties],
-                  keep, vars, type_vars, acc_vars, acc_kind, acc_matched) do
-    case unify(left, right, keep, vars, type_vars, acc_vars) do
-      {:disjoint, _, _, _} = disjoint ->
-        disjoint
-      {kind, matched, type_vars, acc_vars} ->
-        unify_args(lefties, righties, keep, vars, type_vars, acc_vars,
-                   unify_min(kind, acc_kind), [matched | acc_matched])
-    end
-  end
-  defp unify_args([], [], _keep, _vars, type_vars, acc_vars, kind, acc_matched) do
-    {kind, :lists.reverse(acc_matched), type_vars, acc_vars}
   end
 
   defp unify_var(key, type, keep, vars, type_vars, acc_vars) do
     case Map.get(vars, key, []) do
       [] ->
         {:match,
-         type,
          Map.update(type_vars, key, [type], &union(&1, [type])),
          Map.update(acc_vars, key, [type], &union(&1, [type]))}
       value ->
         with {_, [_ | _] = match, type_vars, acc_vars} <-
                unify(value, [type], keep, vars, type_vars, acc_vars) do
           {:match,
-           type,
            Map.update(type_vars, key, match, &union(&1 -- value, match)),
            Map.update(acc_vars, key, match, &union(&1 -- value, match))}
+        else
+          _ -> :disjoint
         end
     end
   end
 
   defp unify_fn([{left_head, left_body, left_inferred} | lefties], righties,
                 keep, vars, type_vars, acc_vars) do
-
     fun_vars = Map.merge(vars, left_inferred)
     fun_type = Map.merge(type_vars, left_inferred)
     fun_acc = Map.merge(acc_vars, left_inferred)
 
+    # TODO: What if we pass left_inferred as fun_type?
     case unify_fn(left_head, left_body, righties, keep, fun_vars, fun_type, fun_acc, false) do
       {fun_type, fun_acc} ->
         keys = Map.keys(left_inferred)
@@ -361,11 +347,11 @@ defmodule Types do
         acc_vars = Map.drop(fun_acc, keys)
         unify_fn(lefties, righties, keep, type_vars, type_vars, acc_vars)
       :error ->
-        {:disjoint, righties, type_vars, acc_vars}
+        :disjoint
     end
   end
-  defp unify_fn([], righties, _keep, _vars, type_vars, acc_vars) do
-    {:match, righties, type_vars, acc_vars}
+  defp unify_fn([], _righties, _keep, _vars, type_vars, acc_vars) do
+    {:match, type_vars, acc_vars}
   end
 
   defp unify_fn(left_head, left_body, [{right_head, right_body, right_inferred} | clauses],
@@ -384,7 +370,7 @@ defmodule Types do
       type_vars = Map.drop(fun_type, keys)
       acc_vars = Map.drop(fun_acc, keys)
       unify_fn(left_head, left_body, clauses, keep, vars,
-               type_vars, acc_vars, kind == :match or matched?)
+               type_vars, acc_vars, true)
     else
       _ ->
         unify_fn(left_head, left_body, clauses, keep, vars, type_vars, acc_vars, matched?)
@@ -395,6 +381,24 @@ defmodule Types do
   end
   defp unify_fn(_, _, [], _keep, _vars, _type_vars, _acc_vars, false) do
     :error
+  end
+
+  defp unify_args(lefties, righties, keep, vars, type_vars, acc_vars) do
+    unify_args(lefties, righties, keep, vars, type_vars, acc_vars, :match, [])
+  end
+
+  defp unify_args([left | lefties], [right | righties],
+                  keep, vars, type_vars, acc_vars, acc_kind, acc_matched) do
+    case unify(left, right, keep, vars, type_vars, acc_vars) do
+      {:disjoint, _, _, _} = disjoint ->
+        disjoint
+      {kind, matched, type_vars, acc_vars} ->
+        unify_args(lefties, righties, keep, vars, type_vars, acc_vars,
+                   unify_min(kind, acc_kind), [matched | acc_matched])
+    end
+  end
+  defp unify_args([], [], _keep, _vars, type_vars, acc_vars, kind, acc_matched) do
+    {kind, acc_matched, type_vars, acc_vars}
   end
 
   @doc """
