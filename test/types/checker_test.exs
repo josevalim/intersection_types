@@ -167,6 +167,12 @@ defmodule Types.CheckerTest do
       assert quoted_of((y = fn x -> fn y -> x.(x.(y)) end end; {y, y})) |> format() ==
               "{((a -> a) -> (a -> a)), ((b -> b) -> (b -> b))}"
 
+      assert quoted_of(fn x -> y = x; y end) |> format() ==
+             "(a -> a)"
+
+      assert quoted_of(fn x -> y = fn z -> x.(z) end; {y, y} end) |> format() ==
+             "((a -> b) -> {(c -> b), (d -> b)})"
+
       assert quoted_of(fn x -> z = fn y -> {x, y} end; {z, z} end) |> format() ==
              "(a -> {(b -> {a, b}), (c -> {a, c})})"
     end

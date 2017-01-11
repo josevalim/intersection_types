@@ -642,6 +642,7 @@ defmodule Types.Checker do
       # If there are variables in the head that are not in match
       # counters, and we have not inferred about them, we need to
       # hoist them up.
+      # TODO: Remove hoisting by tracking the level of variables.
       hoist =
         for counter <- Map.keys(head_used) -- match_counters,
             not Map.has_key?(inferred, counter),
