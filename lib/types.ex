@@ -3,6 +3,54 @@ defmodule Types do
   Type inference and checking for Elixir.
   """
 
+  ## Adding a new type
+  # bind, traverse, is_supertype?, quantify, types_to_algebra
+
+  ## Patterns
+  # 1. adding types/patterns to receive
+  # 2. mixing typed with non-typed
+  # 3. the cost of having duplicate syntax
+
+  ## Function annotations
+  # 1. Annotations may have multiple clauses. Each clause must have at least one matching implementation.
+  # 2. Should we force a explicit type on fn true -> true; _ -> x end? If so, what to do on catch all?
+
+  ## Guards
+  # Must perform exhaustion check based on patterns
+  # Must perform exhaustion check for base types (integers, atoms, floats, etc)
+  # Pattern matches {a, a} also require an exaustion check
+
+  # TODO: Use inline_list_funcs for performance.
+
+  ## Forbidden
+  # [foo | bar] (developers must use cons(...) to avoid ambiguity)
+
+  ## Built-in Patterns
+  # pattern number() :: integer() | float()
+
+  ## Built-in Types
+  # type list(a) :: empty_list() | cons(a, list(a))
+  # type improper_list(a) :: empty_list() | cons(a, list(a) | a)
+
+  ## Implemented Patterns
+  # pattern boolean() :: true | false
+  # pattern atom()
+  # pattern integer()
+
+  ## Literals
+  # integer
+  # atom
+  # tuples
+
+  ## Representation
+  # {:value, val}
+  # {:fn, [clauses], arity}
+  # {:defn, [clauses], arity}
+  # {:tuple, args, arity}
+  # {:var, var_ctx, var_key}
+  # :integer
+  # :atom
+
   alias Inspect.Algebra, as: A
 
   @doc """
@@ -91,73 +139,10 @@ defmodule Types do
     end
   end
 
-  ## Adding a new type
-  # bind, traverse, is_supertype?, quantify, types_to_algebra
-
-  ## Patterns
-  # 1. adding types/patterns to receive
-  # 2. mixing typed with non-typed
-  # 3. the cost of having duplicate syntax
-
-  ## Function annotations
-  # 1. Annotations may have multiple clauses. Each clause must have at least one matching implementation.
-  # 2. Should we force a explicit type on fn true -> true; _ -> x end? If so, what to do on catch all?
-
-  ## Guards
-  # Must perform exhaustion check based on patterns
-  # Must perform exhaustion check for base types (integers, atoms, floats, etc)
-  # Pattern matches {a, a} also require an exaustion check
-
-  ## State helpers
-
-  # The :vars map keeps all Elixir variables and their types
-  # The :match map keeps all Elixir variables defined in a match
-  # The :inferred map keeps track of all inferred types (they have a counter)
-  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0, var_apply: %{}}
-
-  defp replace_vars(state, %{vars: vars}) do
-    %{state | vars: vars}
-  end
-
-  defp lift_vars(%{vars: vars1} = state, %{vars: vars2}) do
-    %{state | vars: Map.merge(vars2, vars1)}
-  end
-
-  ## Forbidden
-  # [foo | bar] (developers must use cons(...) to avoid ambiguity)
-
-  ## Built-in Patterns
-  # pattern number() :: integer() | float()
-
-  ## Built-in Types
-  # type list(a) :: empty_list() | cons(a, list(a))
-  # type improper_list(a) :: empty_list() | cons(a, list(a) | a)
-
-  ## Implemented Patterns
-  # pattern boolean() :: true | false
-  # pattern atom()
-  # pattern integer()
-
-  ## Literals
-  # integer
-  # atom
-  # tuples
-
-  ## Representation
-  # {:value, val}
-  # {:fn, [clauses], arity}
-  # {:defn, [clauses], arity}
-  # {:tuple, args, arity}
-  # {:var, var_ctx, var_key}
-  # :integer
-  # :atom
-
-  # TODO: Use inline_list_funcs for performance.
-
   @doc """
   Converts the given Type AST to its inner type.
   """
-  def ast_to_types(ast, state \\ @state)
+  def ast_to_types(ast, state \\ state())
 
   def ast_to_types({:boolean, _, []}, state) do
     ok([{:value, true}, {:value, false}], state)
@@ -450,53 +435,23 @@ defmodule Types do
     bind(types, %{}, vars, preserve)
   end
 
-  defp bind([], used, _vars, _preserve) do
-    {[], used}
-  end
   defp bind(types, used, vars, preserve) do
-    {types, used} = bind_each(types, [], used, vars, preserve)
-    {:lists.reverse(types), used}
-  end
-
-  defp bind_each([{:fn, clauses, arity} | types], acc, used, vars, preserve) do
-    {clauses, used} =
-      Enum.map_reduce clauses, used, fn {head, body, inferred}, used ->
-        {head, used} = bind_args(head, used, vars, preserve)
-        {body, used} = bind(body, used, vars, preserve)
-        {{head, body, inferred}, used}
-      end
-    bind_each(types, [{:fn, clauses, arity} | acc], used, vars, preserve)
-  end
-  defp bind_each([{:var, _, key} = type | types], acc, used, vars, preserve) do
-    {value, used} =
-      case Map.fetch(preserve, key) do
-        :error -> {[], Map.put(used, key, true)}
-        {:ok, val} -> {val, used}
-      end
-
-    case value do
-      [] ->
+    traverse(types, used, fn
+      {:var, _, key}, used ->
+        {value, used} =
+          case Map.fetch(preserve, key) do
+            {:ok, value} -> {value, used}
+            :error -> {[], Map.put(used, key, true)}
+          end
         case Map.get(vars, key, []) do
-          [] ->
-            bind_each(types, [type | acc], used, vars, preserve)
-          existing when is_list(existing) ->
-            {existing, used} = bind_each(existing, [], used, vars, preserve)
-            {types, used} = bind_each(types, acc, used, vars, preserve)
-            {union(existing, types), used}
+          [_ | _] = existing when value == [] ->
+            {:union, existing, used}
+          _ ->
+            {:ok, used}
         end
-      _ ->
-        bind_each(types, [type | acc], used, vars, preserve)
-    end
-  end
-  defp bind_each([{:tuple, args, arity} | types], acc, used, vars, preserve) do
-    {args, used} = bind_args(args, used, vars, preserve)
-    bind_each(types, [{:tuple, args, arity} | acc], used, vars, preserve)
-  end
-  defp bind_each([type | types], acc, used, vars, preserve) do
-    bind_each(types, [type | acc], used, vars, preserve)
-  end
-  defp bind_each([], acc, used, _vars, _preserve) do
-    {acc, used}
+      _, used ->
+        {:ok, used}
+    end)
   end
 
   defp bind_args(args, used, vars, preserve) do
@@ -535,8 +490,14 @@ defmodule Types do
   end
   defp traverse([type | types], acc, state, fun) do
     case fun.(type, state) do
-      {:ok, state} -> traverse(types, [type | acc], state, fun)
-      {:replace, type, state} -> traverse(types, [type | acc], state, fun)
+      {:ok, state} ->
+        traverse(types, [type | acc], state, fun)
+      {:replace, type, state} ->
+        traverse(types, [type | acc], state, fun)
+      {:union, extra, state} ->
+        {extra, state} = traverse(extra, [], state, fun)
+        {types, state} = traverse(types, acc, state, fun)
+        {union(extra, types), state}
     end
   end
   defp traverse([], acc, state, _fun) do
@@ -705,7 +666,7 @@ defmodule Types do
   Returns the type of the given expression.
   """
   def of(expr) do
-    of(expr, @state)
+    of(expr, state())
   end
 
   defp of({var, meta, ctx}, %{counter: counter, vars: vars} = state)
@@ -1228,5 +1189,24 @@ defmodule Types do
 
   defp error(meta, args) do
     {:error, meta, args}
+  end
+
+  ## State helpers
+
+  # The :vars map keeps all Elixir variables and their types
+  # The :match map keeps all Elixir variables defined in a match
+  # The :inferred map keeps track of all inferred types (they have a counter)
+  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0, var_apply: %{}}
+
+  defp state do
+    @state
+  end
+
+  defp replace_vars(state, %{vars: vars}) do
+    %{state | vars: vars}
+  end
+
+  defp lift_vars(%{vars: vars1} = state, %{vars: vars2}) do
+    %{state | vars: Map.merge(vars2, vars1)}
   end
 end
