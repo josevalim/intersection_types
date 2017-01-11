@@ -11,8 +11,7 @@ defmodule TypesTest do
     types
     |> Types.bind(inferred, %{})
     |> elem(0)
-    |> Types.types_to_algebra()
-    |> Inspect.Algebra.format(:infinity)
+    |> Types.Union.to_iodata()
     |> IO.iodata_to_binary()
   end
 
@@ -61,95 +60,6 @@ defmodule TypesTest do
              [{:tuple, [[{:value, :ok}], [:atom]], 2}]
     end
   end
-
-  defmacro quoted_union(left, right) do
-    with {:ok, left, _} <- Types.ast_to_types(left),
-         {:ok, right, _} <- Types.ast_to_types(right) do
-      quote do
-        Types.union(unquote(Macro.escape(left)),
-                    unquote(Macro.escape(right))) |> Enum.sort()
-      end
-    else
-      _ ->
-        quote do
-          assert {:ok, _, _} = Types.ast_to_types(unquote(Macro.escape(left)))
-          assert {:ok, _, _} = Types.ast_to_types(unquote(Macro.escape(right)))
-        end
-    end
-  end
-
-  describe "union/2" do
-    test "base types" do
-      assert quoted_union(integer(), atom()) ==
-             [:atom, :integer]
-
-      assert quoted_union(:foo, atom()) ==
-             [:atom]
-
-      assert quoted_union(atom(), :foo) ==
-             [:atom]
-
-      assert quoted_union(integer(), :foo) ==
-             [:integer, {:value, :foo}]
-    end
-
-    test "tuples" do
-      assert quoted_union({}, {:foo}) ==
-             [{:tuple, [], 0}, {:tuple, [[{:value, :foo}]], 1}]
-
-      assert quoted_union({:ok, atom()}, {:ok, :foo}) ==
-             [{:tuple, [[{:value, :ok}], [:atom]], 2}]
-
-      assert quoted_union({:ok, atom()}, {:ok, atom()}) ==
-             [{:tuple, [[{:value, :ok}], [:atom]], 2}]
-
-      assert quoted_union({boolean(), boolean()}, {boolean(), boolean()}) ==
-             [{:tuple, [[{:value, true}, {:value, false}], [{:value, true}, {:value, false}]], 2}]
-
-      assert quoted_union({:foo, :bar}, {atom(), atom()}) ==
-             [{:tuple, [[:atom], [:atom]], 2}]
-
-      assert quoted_union({:ok, integer()}, {:error, 1}) ==
-             [{:tuple, [[{:value, :error}], [:integer]], 2},
-              {:tuple, [[{:value, :ok}], [:integer]], 2}]
-
-      # TODO: Write using quoted_union once we have |
-      assert Types.union([{:tuple, [[:atom, :integer], [:atom]], 2}],
-                         [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
-             [{:tuple, [[:atom, :integer], [:atom]], 2}]
-
-      assert Types.union([{:tuple, [[:atom, :integer], [:atom]], 2}],
-                         [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
-             [{:tuple, [[:atom, :integer], [:atom]], 2}]
-    end
-  end
-
-  # TODO: Rewrite those using unions.
-  # test "fns" do
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn x -> x end, fn y -> y end}) |> types()
-  #   assert Types.intersection(left, right) == {left, [], []}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn :foo -> :foo end, fn y :: atom() -> y end}) |> types()
-  #   assert Types.intersection(left, right) == {left, [], []}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn y :: atom() -> y end, fn :foo -> :foo end}) |> types()
-  #   assert Types.intersection(left, right) == {right, right, left}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn :foo -> :foo; :bar -> :bar end, fn y :: atom() -> y end}) |> types()
-  #   assert Types.intersection(left, right) == {left, [], []}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn y :: atom() -> y end, fn :foo -> :foo; :bar -> :bar end}) |> types()
-  #   assert Types.intersection(left, right) == {right, right, left}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn x :: integer() -> x end, fn y :: atom() -> y end}) |> types()
-  #   assert Types.intersection(left, right) == {[], [], left}
-  # end
 
   describe "unify/5" do
     test "unions" do
