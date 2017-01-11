@@ -313,11 +313,11 @@ defmodule Types do
   end
 
   defp unify_each(left, right, _keep, _vars, type_vars, acc_vars) do
-    case qualify(left, right, %{}) do
-      {:equal, _} -> {:match, type_vars, acc_vars}
-      {:superset, _} -> {:match, type_vars, acc_vars}
-      {:subset, _} -> {:subset, left, type_vars, acc_vars}
-      {:disjoint, _} -> :disjoint
+    case qualify(left, right) do
+      :equal -> {:match, type_vars, acc_vars}
+      :superset -> {:match, type_vars, acc_vars}
+      :subset -> {:subset, left, type_vars, acc_vars}
+      :disjoint -> :disjoint
     end
   end
 
@@ -525,10 +525,10 @@ defmodule Types do
   end
 
   defp union(left, [right | righties], temp_left, temp_right, acc) do
-    case qualify(left, right, %{}) do
-      {:disjoint, _} -> union(left, righties, temp_left, [right | temp_right], acc)
-      {:subset, _} -> union(temp_left, temp_right ++ [right | righties], acc)
-      {_, _} -> union(temp_left, temp_right ++ righties, [left | acc])
+    case qualify(left, right) do
+      :disjoint -> union(left, righties, temp_left, [right | temp_right], acc)
+      :subset -> union(temp_left, temp_right ++ [right | righties], acc)
+      _ -> union(temp_left, temp_right ++ righties, [left | acc])
     end
   end
   defp union(left, [], temp_left, temp_right, acc) do
@@ -536,128 +536,124 @@ defmodule Types do
   end
 
   defp union_add(left, [right | righties], acc) do
-    case qualify(left, right, %{}) do
-      {:disjoint, _} -> union_add(left, righties, [right | acc])
-      {:subset, _} -> acc ++ [right | righties]
-      {_, _} -> acc ++ [left | righties]
+    case qualify(left, right) do
+      :disjoint -> union_add(left, righties, [right | acc])
+      :subset -> acc ++ [right | righties]
+      _ -> acc ++ [left | righties]
     end
   end
   defp union_add(left, [], acc) do
     [left | acc]
   end
 
-  # Qualifies base types.
-  defp qualify(type, type, vars), do: {:equal, vars}
-
-  defp qualify({:var, _, left_counter}, {:var, _, right_counter}, vars) do
-    left_key = {:left, left_counter}
-    right_key = {:right, right_counter}
-    case vars do
-      %{^left_key => right_value, ^right_key => left_value} ->
-        left_value = left_value || left_counter
-        right_value = right_value || right_counter
-        vars = %{vars | left_key => right_value, right_key => left_value}
-        if left_value == left_counter and right_value == right_counter do
-          {:equal, vars}
-        else
-          {:disjoint, vars}
-        end
-      %{} ->
-        {:disjoint, vars}
-    end
+  @doc """
+  Qualifies two types by comparing them.
+  """
+  def qualify(left, right) do
+    qualify(left, right, %{}, %{}) |> elem(0)
   end
 
-  defp qualify({:fn, left, arity}, {:fn, right, arity}, vars) do
-    qualify_fn(left, right, vars, :equal)
-  end
+  defp qualify(type, type, lvars, rvars), do: {:equal, lvars, rvars}
 
-  defp qualify(:atom, {:value, atom}, vars) when is_atom(atom), do: {:superset, vars}
-  defp qualify({:value, atom}, :atom, vars) when is_atom(atom), do: {:subset, vars}
-
-  defp qualify({:tuple, args1, arity}, {:tuple, args2, arity}, vars) do
-    qualify_args(args1, args2, vars, :equal)
-  end
-
-  defp qualify(_, _, vars), do: {:disjoint, vars}
-
-  defp qualify_args([left | lefties], [right | righties], vars, :equal) do
-    case qualify_look_ahead(:lists.sort(left), :lists.sort(right), vars) do
-      {:equal, vars} -> qualify_args(lefties, righties, vars, :equal)
-      {kind, vars} -> qualify_args([left | lefties], [right | righties], vars, kind)
-    end
-  end
-  defp qualify_args([left | lefties], [right | righties], vars, :superset) do
-    if vars = qualify_set(left, right, vars, :superset) do
-      qualify_args(lefties, righties, vars, :superset)
+  defp qualify({:var, _, left_counter} = left, {:var, _, right_counter} = right, lvars, rvars) do
+    left_value = Map.get(lvars, left_counter, [right])
+    right_value = Map.get(rvars, right_counter, [left])
+    if left_value == right_value do
+      {:equal,
+       Map.put(lvars, left_counter, left_value),
+       Map.put(rvars, right_counter, right_value)}
     else
-      {:disjoint, vars}
+      {:disjoint, lvars, rvars}
     end
   end
-  defp qualify_args([left | lefties], [right | righties], vars, :subset) do
-    if vars = qualify_set(left, right, vars, :subset) do
-      qualify_args(lefties, righties, vars, :subset)
-    else
-      {:disjoint, vars}
+
+  defp qualify({:fn, left, arity}, {:fn, right, arity}, lvars, rvars) do
+    qualify_fn(left, right, lvars, rvars, :equal)
+  end
+
+  defp qualify(:atom, {:value, atom}, lvars, rvars) when is_atom(atom), do: {:superset, lvars, rvars}
+  defp qualify({:value, atom}, :atom, lvars, rvars) when is_atom(atom), do: {:subset, lvars, rvars}
+
+  defp qualify({:tuple, args1, arity}, {:tuple, args2, arity}, lvars, rvars) do
+    qualify_args(args1, args2, lvars, rvars, :equal)
+  end
+
+  defp qualify(_, _, lvars, rvars), do: {:disjoint, lvars, rvars}
+
+  defp qualify_args([left | lefties], [right | righties], lvars, rvars, :equal) do
+    case qualify_look_ahead(:lists.sort(left), :lists.sort(right), lvars, rvars) do
+      {:equal, lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, :equal)
+      {kind, lvars, rvars} -> qualify_args([left | lefties], [right | righties], lvars, rvars, kind)
     end
   end
-  defp qualify_args(_, _, vars, :disjoint) do
-    {:disjoint, vars}
-  end
-  defp qualify_args([], [], vars, kind) do
-    {kind, vars}
-  end
-
-  defp qualify_look_ahead([left | lefties], [right | righties], vars) do
-    case qualify(left, right, vars) do
-      {:equal, vars} -> qualify_look_ahead(lefties, righties, vars)
-      {kind, vars} -> {kind, vars}
+  defp qualify_args([left | lefties], [right | righties], lvars, rvars, :superset) do
+    case qualify_set(left, right, lvars, rvars, :superset) do
+      {lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, :superset)
+      :error -> {:disjoint, lvars, rvars}
     end
   end
-  defp qualify_look_ahead([], [], vars), do: {:equal, vars}
-  defp qualify_look_ahead([], _, vars), do: {:subset, vars}
-  defp qualify_look_ahead(_, [], vars), do: {:superset, vars}
-
-  defp qualify_set(lefties, [right | righties], vars, kind) do
-    qualify_set(lefties, right, lefties, righties, vars, kind)
-  end
-  defp qualify_set(_lefties, [], vars, _kind) do
-    vars
-  end
-
-  defp qualify_set([type | types], right, lefties, righties, vars, kind) do
-    case qualify(type, right, vars) do
-      {^kind, vars} -> qualify_set(lefties, righties, vars, kind)
-      {:equal, vars} -> qualify_set(lefties, righties, vars, kind)
-      {_, _} -> qualify_set(types, right, lefties, righties, vars, kind)
+  defp qualify_args([left | lefties], [right | righties], lvars, rvars, :subset) do
+    case qualify_set(left, right, lvars, rvars, :subset) do
+      {lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, :subset)
+      :error -> {:disjoint, lvars, rvars}
     end
   end
-  defp qualify_set([], _right, _lefties, _righties, _vars, _kind) do
-    nil
+  defp qualify_args(_, _, lvars, rvars, :disjoint) do
+    {:disjoint, lvars, rvars}
+  end
+  defp qualify_args([], [], lvars, rvars, kind) do
+    {kind, lvars, rvars}
   end
 
-  defp qualify_fn([{left_head, left_body, left_inferred} | lefties], righties, vars, kind) do
-    # TODO: left_free
-    left_vars = Enum.reduce(Map.keys(left_inferred), vars, &Map.put(&2, {:left, &1}, nil))
+  defp qualify_look_ahead([left | lefties], [right | righties], lvars, rvars) do
+    case qualify(left, right, lvars, rvars) do
+      {:equal, lvars, rvars} -> qualify_look_ahead(lefties, righties, lvars, rvars)
+      {kind, lvars, rvars} -> {kind, lvars, rvars}
+    end
+  end
+  defp qualify_look_ahead([], [], lvars, rvars), do: {:equal, lvars, rvars}
+  defp qualify_look_ahead([], _, lvars, rvars), do: {:subset, lvars, rvars}
+  defp qualify_look_ahead(_, [], lvars, rvars), do: {:superset, lvars, rvars}
 
-    # TODO: right_free
+  defp qualify_set(lefties, [right | righties], lvars, rvars, kind) do
+    qualify_set(lefties, right, lefties, righties, lvars, rvars, kind)
+  end
+  defp qualify_set(_lefties, [], lvars, rvars, _kind) do
+    {lvars, rvars}
+  end
+
+  defp qualify_set([type | types], right, lefties, righties, lvars, rvars, kind) do
+    case qualify(type, right, lvars, rvars) do
+      {^kind, lvars, rvars} -> qualify_set(lefties, righties, lvars, rvars, kind)
+      {:equal, lvars, rvars} -> qualify_set(lefties, righties, lvars, rvars, kind)
+      {_, _} -> qualify_set(types, right, lefties, righties, lvars, rvars, kind)
+    end
+  end
+  defp qualify_set([], _right, _lefties, _righties, _lvars, _rvars, _kind) do
+    :error
+  end
+
+  defp qualify_fn([{left_head, left_body, left_inferred} | lefties], righties, lvars, rvars, kind) do
+    fn_lvars = Map.merge(lvars, left_inferred)
+
     row =
       for {right_head, right_body, right_inferred} <- righties do
-        vars = Enum.reduce(Map.keys(right_inferred), left_vars, &Map.put(&2, {:right, &1}, nil))
-        qualify_args([left_body | left_head], [right_body | right_head], vars, :equal) |> elem(0)
+        fn_rvars = Map.merge(rvars, right_inferred)
+        qualify_args([left_body | left_head], [right_body | right_head], fn_lvars, fn_rvars, :equal)
       end
 
     case qualify_fn(row, kind, false) do
-      :disjoint -> {:disjoint, vars}
-      kind -> qualify_fn(lefties, righties, vars, kind)
+      :disjoint -> {:disjoint, lvars, rvars}
+      kind -> qualify_fn(lefties, righties, lvars, rvars, kind)
     end
   end
-  defp qualify_fn([], _righties, vars, kind) do
-    {kind, vars}
+  defp qualify_fn([], _righties, lvars, rvars, kind) do
+    {kind, lvars, rvars}
   end
 
-  defp qualify_fn([:disjoint | row], kind, matched?), do: qualify_fn(row, kind, matched?)
-  defp qualify_fn([kind | row], :equal, _matched?), do: qualify_fn(row, kind, true)
-  defp qualify_fn([kind | row], kind, _matched?), do: qualify_fn(row, kind, true)
+  defp qualify_fn([{:disjoint, _, _} | row], kind, matched?), do: qualify_fn(row, kind, matched?)
+  defp qualify_fn([{kind, _, _} | row], :equal, _matched?), do: qualify_fn(row, kind, true)
+  defp qualify_fn([{kind, _, _} | row], kind, _matched?), do: qualify_fn(row, kind, true)
   defp qualify_fn([_ | _], _, _matched?), do: :disjoint
   defp qualify_fn([], _kind, false), do: :disjoint
   defp qualify_fn([], kind, true), do: kind
@@ -865,7 +861,7 @@ defmodule Types do
   defp of_var_apply_clauses(clauses, args, return) do
     {pre, pos} =
       Enum.split_while(clauses, fn {head, _, _} ->
-        qualify_args(head, args, %{}, :equal) |> elem(0) != :superset
+        qualify_args(head, args, %{}, %{}, :equal) |> elem(0) != :superset
       end)
     pre ++ [{args, return, %{}} | pos]
   end
