@@ -32,16 +32,12 @@ defmodule Types do
   end
 
   defp types_to_algebra(types, state) do
-    {types, state} = Enum.map_reduce(types, state, &type_to_algebra/2)
+    {types, state} =
+      types
+      |> Enum.sort()
+      |> Enum.map_reduce(state, &type_to_algebra/2)
     {A.group(A.fold_doc(types, &A.glue(A.concat(&1, " |"), &2))), state}
   end
-
-  # {:value, val}
-  # {:fn, [clauses], arity}
-  # {:tuple, args, arity}
-  # {:var, var_ctx, var_key}
-  # :integer
-  # :atom
 
   defp type_to_algebra({:value, val}, state) do
     {inspect(val), state}
@@ -270,22 +266,36 @@ defmodule Types do
   defp unify_each({:var, _, key1}, {:var, _, key2} = right, keep, vars, type_vars, acc_vars) do
     case {Map.get(vars, key1, []), Map.get(vars, key2, [])} do
       {[], _} ->
-        acc_vars = Map.put(acc_vars, key2, Map.get(type_vars, key2, []))
-        {:match,
-         Map.update(type_vars, key1, [right], &union(&1, [right])),
-         Map.update(acc_vars, key1, [right], &union(&1, [right]))}
+        type_vars =
+          type_vars
+          |> Map.update(key1, [right], &union(&1, [right]))
+        acc_vars =
+          acc_vars
+          |> Map.put(key2, Map.get(type_vars, key2, []))
+          |> Map.update(key1, [right], &union(&1, [right]))
+        {:match, type_vars, acc_vars}
       {left_value, []} ->
-        type_vars = Map.update(type_vars, key2, left_value, &union(&1, left_value))
-        acc_vars = Map.update(acc_vars, key2, left_value, &union(&1, left_value))
-        {:match,
-         Map.update(type_vars, key1, [right], &union(&1 -- left_value, [right])),
-         Map.update(acc_vars, key1, [right], &union(&1 -- left_value, [right]))}
+        type_vars =
+          type_vars
+          |> Map.update(key2, left_value, &union(&1, left_value))
+          |> Map.update(key1, [right], &union(&1 -- left_value, [right]))
+        acc_vars =
+          acc_vars
+          |> Map.update(key2, left_value, &union(&1, left_value))
+          |> Map.update(key1, [right], &union(&1 -- left_value, [right]))
+        {:match, type_vars, acc_vars}
       {left_value, right_value} ->
         with {_, [_ | _] = match, type_vars, acc_vars} <-
                unify(left_value, right_value, keep, vars, type_vars, acc_vars) do
-          {:match,
-           Map.update(type_vars, key2, match, &union(&1 -- right_value, match)),
-           Map.update(acc_vars, key2, match, &union(&1 -- right_value, match))}
+          type_vars =
+            type_vars
+            |> Map.update(key1, match, &union(&1 -- left_value, match))
+            |> Map.update(key2, match, &union(&1 -- right_value, match))
+          acc_vars =
+            acc_vars
+            |> Map.update(key1, match, &union(&1 -- left_value, match))
+            |> Map.update(key2, match, &union(&1 -- right_value, match))
+          {:match, type_vars, acc_vars}
         else
           _ -> :disjoint
         end
@@ -542,24 +552,37 @@ defmodule Types do
   """
   def union(lefties, []), do: lefties
   def union([], righties), do: righties
+  def union([single], types), do: union_add(single, types, [])
+  def union(types, [single]), do: union_add(single, types, [])
   def union(lefties, righties), do: union(lefties, righties, [])
 
   defp union([left | lefties], righties, acc) do
     union(left, righties, lefties, [], acc)
   end
   defp union([], righties, acc) do
-    :lists.reverse(acc, righties)
+    acc ++ righties
   end
 
   defp union(left, [right | righties], temp_left, temp_right, acc) do
     case qualify(left, right, %{}) do
       {:disjoint, _} -> union(left, righties, temp_left, [right | temp_right], acc)
-      {:subset, _} -> union(temp_left, :lists.reverse(temp_right, [right | righties]), acc)
-      {_, _} -> union(temp_left, :lists.reverse(temp_right, righties), [left | acc])
+      {:subset, _} -> union(temp_left, temp_right ++ [right | righties], acc)
+      {_, _} -> union(temp_left, temp_right ++ righties, [left | acc])
     end
   end
   defp union(left, [], temp_left, temp_right, acc) do
-    union(temp_left, :lists.reverse(temp_right), [left | acc])
+    union(temp_left, temp_right, [left | acc])
+  end
+
+  defp union_add(left, [right | righties], acc) do
+    case qualify(left, right, %{}) do
+      {:disjoint, _} -> union_add(left, righties, [right | acc])
+      {:subset, _} -> acc ++ [right | righties]
+      {_, _} -> acc ++ [left | righties]
+    end
+  end
+  defp union_add(left, [], acc) do
+    [left | acc]
   end
 
   # Qualifies base types.
@@ -1056,7 +1079,6 @@ defmodule Types do
   defp of_clauses_hoist(_, hoist) do
     {:ok, hoist}
   end
-
 
   ## Blocks
 

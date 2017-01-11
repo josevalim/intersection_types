@@ -286,18 +286,18 @@ defmodule TypesTest do
 
       assert quoted_of(fn x ->
         (fn y :: boolean() -> y end).(x)
-      end) |> format() == "(a -> a) when a: true | false"
+      end) |> format() == "(a -> a) when a: false | true"
 
       assert quoted_of(fn x :: boolean() ->
         (fn y -> y end).(x)
-      end) |> format() == "(a -> a) when a: true | false"
+      end) |> format() == "(a -> a) when a: false | true"
 
       assert quoted_of(fn x ->
         fn z ->
           (fn y :: boolean() -> y end).(x)
         end
         x
-      end) |> format() == "(a -> a) when a: true | false"
+      end) |> format() == "(a -> a) when a: false | true"
 
       assert quoted_of(fn x ->
         (fn true -> true end).(x)
@@ -426,7 +426,7 @@ defmodule TypesTest do
       # ((a -> b) -> (a -> b)) multiple clauses
       assert quoted_of((fn x -> fn y -> x.(y) end end).
                        (fn :foo -> :bar; :bar -> :bat end)) |> format() ==
-             "(:foo | :bar -> :bar | :bat)"
+             "(:bar | :foo -> :bar | :bat)"
 
       # ((a -> a) -> (a -> a)) match
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
@@ -446,7 +446,7 @@ defmodule TypesTest do
       # (a -> b; b -> c) multiple clauses
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                        (fn :foo -> :foo; :bar -> :bar; :no -> :match end)) |> format() ==
-             "(:foo | :bar -> :foo | :bar)"
+             "(:bar | :foo -> :bar | :foo)"
     end
 
     test "apply on rank 2" do
@@ -516,7 +516,7 @@ defmodule TypesTest do
         z = (fn true -> true; false -> false end).(x)
         (fn true -> true end).(x)
         z
-      end) |> format() == "(true -> true | false)"
+      end) |> format() == "(true -> false | true)"
 
       assert quoted_of(fn x ->
         (fn true -> true end).(x)
@@ -607,7 +607,7 @@ defmodule TypesTest do
       assert quoted_of(fn z ->
         {x, y} = (fn true -> {true, :foo}; false -> {false, :bar} end).(z)
         {y, x}
-      end) |> format() == "(true | false -> {:foo | :bar, true | false})"
+      end) |> format() == "(false | true -> {:bar | :foo, false | true})"
     end
 
     test "free variables" do
@@ -640,8 +640,6 @@ defmodule TypesTest do
       assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> format() ==
              "((:foo -> a; :bar -> b) -> {a, b})"
 
-      # TODO: This and the one below are equivalent.
-      # We need to have sorted unions.
       assert quoted_of(fn x -> fn y -> {x.(y), x.(:foo)} end end) |> format() ==
              "((a -> b; :foo -> c) -> (a -> {b, c}))"
 
