@@ -4,8 +4,8 @@ defmodule Types.UnionTest do
   import Types.Union
 
   defmacro quoted_union(left, right) do
-    with {:ok, left, _} <- Types.ast_to_types(left),
-         {:ok, right, _} <- Types.ast_to_types(right) do
+    with {:ok, left, _} <- Types.Checker.ast_to_types(left),
+         {:ok, right, _} <- Types.Checker.ast_to_types(right) do
       quote do
         union(unquote(Macro.escape(left)),
               unquote(Macro.escape(right))) |> Enum.sort()
@@ -13,8 +13,8 @@ defmodule Types.UnionTest do
     else
       _ ->
         quote do
-          assert {:ok, _, _} = Types.ast_to_types(unquote(Macro.escape(left)))
-          assert {:ok, _, _} = Types.ast_to_types(unquote(Macro.escape(right)))
+          assert {:ok, _, _} = Types.Checker.ast_to_types(unquote(Macro.escape(left)))
+          assert {:ok, _, _} = Types.Checker.ast_to_types(unquote(Macro.escape(right)))
         end
     end
   end

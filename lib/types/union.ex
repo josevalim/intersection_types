@@ -22,6 +22,7 @@ defmodule Types.Union do
   #   quantify
   #   to_algebra
   #   is_supertype?
+  #   ast_to_types
   #
 
   alias Inspect.Algebra, as: A
