@@ -412,7 +412,44 @@ defmodule TypesTest do
         )) |> format() == "{:foo, :bar}"
     end
 
-    test "apply with function arguments" do
+    test "apply with function argument" do
+      # ((a -> b) -> (a -> b)) match
+      assert quoted_of((fn x -> fn y -> x.(y) end end).
+                       (fn :foo -> :bar end)) |> format() ==
+             "(:foo -> :bar)"
+
+      # ((a -> b) -> (a -> b)) superset
+      assert quoted_of((fn x -> fn y -> x.(y) end end).
+                       (fn x :: atom() -> x end)) |> format() ==
+             "(atom() -> atom())"
+
+      # ((a -> b) -> (a -> b)) multiple clauses
+      assert quoted_of((fn x -> fn y -> x.(y) end end).
+                       (fn :foo -> :bar; :bar -> :bat end)) |> format() ==
+             "(:foo | :bar -> :bar | :bat)"
+
+      # ((a -> a) -> (a -> a)) match
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn :foo -> :foo end)) |> format() ==
+             "(:foo -> :foo)"
+
+      # ((a -> a) -> (a -> a)) no match
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+               quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                         (fn :foo -> :bar; :bar -> :baz end))
+
+      # ((a -> a) -> (a -> a)) superset
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn x :: atom() -> x end)) |> format() ==
+             "(atom() -> atom())"
+
+      # (a -> b; b -> c) multiple clauses
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn :foo -> :foo; :bar -> :bar; :no -> :match end)) |> format() ==
+             "(:foo | :bar -> :foo | :bar)"
+    end
+
+    test "apply on rank 2" do
       assert quoted_of((fn x ->
           x.(:foo)
         end).(fn y -> y end)) |> format() == ":foo"
@@ -454,7 +491,8 @@ defmodule TypesTest do
       assert quoted_of((
         c = fn y -> y end
         (fn x -> {x.(:foo), x.(:bar)} end).(c)
-        c)) |> format() == "(a -> a)"
+        c
+      )) |> format() == "(a -> a)"
     end
 
     test "apply with lazy inference" do
@@ -511,43 +549,6 @@ defmodule TypesTest do
         quoted_of(fn z ->
           (fn x -> true = x.(:foo); false = x.(:bar) end).(fn :foo -> z; :bar -> z end)
         end)
-    end
-
-    test "apply with function argument and argument inference" do
-      # ((a -> b) -> (a -> b)) match
-      assert quoted_of((fn x -> fn y -> x.(y) end end).
-                       (fn :foo -> :bar end)) |> format() ==
-             "(:foo -> :bar)"
-
-      # ((a -> b) -> (a -> b)) superset
-      assert quoted_of((fn x -> fn y -> x.(y) end end).
-                       (fn x :: atom() -> x end)) |> format() ==
-             "(atom() -> atom())"
-
-      # ((a -> b) -> (a -> b)) multiple clauses
-      assert quoted_of((fn x -> fn y -> x.(y) end end).
-                       (fn :foo -> :bar; :bar -> :bat end)) |> format() ==
-             "(:foo | :bar -> :bar | :bat)"
-
-      # ((a -> a) -> (a -> a)) match
-      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                       (fn :foo -> :foo end)) |> format() ==
-             "(:foo -> :foo)"
-
-      # ((a -> a) -> (a -> a)) no match
-      assert {:error, _, {:disjoint_apply, _, _, _}} =
-               quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                         (fn :foo -> :bar; :bar -> :baz end))
-
-      # ((a -> a) -> (a -> a)) superset
-      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                       (fn x :: atom() -> x end)) |> format() ==
-             "(atom() -> atom())"
-
-      # (a -> b; b -> c) multiple clauses
-      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                       (fn :foo -> :foo; :bar -> :bar; :no -> :match end)) |> format() ==
-             "(:foo | :bar -> :foo | :bar)"
     end
   end
 
@@ -627,6 +628,9 @@ defmodule TypesTest do
 
       assert quoted_of(fn x -> fn y -> y.(x) end end) |> format() ==
              "(a -> ((a -> b) -> b))"
+
+      assert quoted_of(fn x -> fn y -> x.(x.(y)) end end) |> format() ==
+             "((a -> a) -> (a -> a))"
     end
 
     test "rank 2 inference" do
@@ -636,24 +640,43 @@ defmodule TypesTest do
       assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> format() ==
              "((:foo -> a; :bar -> b) -> {a, b})"
 
-      assert quoted_of(fn x -> fn y -> x.(x.(y)) end end) |> format() ==
-             "((a -> a) -> (a -> a))"
+      # TODO: This and the one below are equivalent.
+      # We need to have sorted unions.
+      assert quoted_of(fn x -> fn y -> {x.(y), x.(:foo)} end end) |> format() ==
+             "((a -> b; :foo -> c) -> (a -> {b, c}))"
+
+      assert quoted_of(fn x -> fn y -> {x.(:foo), x.(y)} end end) |> format() ==
+             "((:foo -> a; b -> c) -> (b -> {a, c}))"
+
+      assert quoted_of(fn x -> fn y -> {x.(:foo), x.(x.(y))} end end) |> format() ==
+             "((:foo -> a; b -> b) -> (b -> {a, b}))"
+
+      assert quoted_of(fn x -> fn y -> {x.(x.(y)), x.(:foo)} end end) |> format() ==
+             "((a -> a; :foo -> b) -> (a -> {a, b}))"
 
       # TODO: Reintroduce those when we have multiple arguments.
-      # assert quoted_of((fn x ->
+      # assert quoted_of(fn x ->
+      #   fn y, z ->
+      #     w2 = x.(z, :bar)
+      #     w1 = x.(:foo, y)
+      #     x.(w1, w2)
+      #   end
+      # end) |> format() == (z, :bar -> :bar | y; :foo, y -> z | :foo)
+
+      # assert quoted_of(fn x ->
       #   z = (fn z :: atom() -> z end).(:bar)
       #   {x.(z), x.(z)}
-      # end)) |> format() == "((atom() -> a) -> {a, a})"
+      # end) |> format() == "((atom() -> a) -> {a, a})"
 
-      # assert quoted_of((fn x ->
+      # assert quoted_of(fn x ->
       #   z = (fn z :: atom() -> z end).(:bar)
       #   {x.(:foo), x.(z)}
-      # end)) |> format() == "((:foo -> a; atom() -> b) -> {a, b})"
+      # end) |> format() == "((:foo -> a; atom() -> b) -> {a, b})"
 
-      # assert quoted_of((fn x ->
+      # assert quoted_of(fn x ->
       #   z = (fn z :: atom() -> z end).(:bar)
       #   {x.(z), x.(:foo)}
-      # end)) |> format() == "((:foo -> a; atom() -> b) -> {b, a})"
+      # end) |> format() == "((:foo -> a; atom() -> b) -> {b, a})"
 
       assert {:error, _, {:recursive_fn, _, _, _}} =
              quoted_of(fn x -> x.(x) end)
@@ -689,13 +712,19 @@ defmodule TypesTest do
 
       assert {:ok,
               [{:fn,
-               [{_, _, %{2 => []}}],
+               [{_, _, %{1 => [], 2 => []}}],
+               1}],
+              _} = quoted_of(fn x -> fn y -> x.(y) end end)
+
+      assert {:ok,
+              [{:fn,
+               [{_, _, %{1 => []}}],
                1}],
               _} = quoted_of(fn x -> fn y -> x.(x.(y)) end end)
 
       assert {:ok,
               [{:fn,
-               [{_, _, %{3 => []}}],
+               [{_, _, %{2 => []}}],
                1}],
               _} = quoted_of(fn x -> fn y -> fn z -> x.(x.(z)) end end end)
     end

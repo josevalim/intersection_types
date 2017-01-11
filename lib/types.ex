@@ -277,7 +277,6 @@ defmodule Types do
       {left_value, []} ->
         type_vars = Map.update(type_vars, key2, left_value, &union(&1, left_value))
         acc_vars = Map.update(acc_vars, key2, left_value, &union(&1, left_value))
-        # TODO: key1 update is likely not required. Try doing nothing or put.
         {:match,
          Map.update(type_vars, key1, [right], &union(&1 -- left_value, [right])),
          Map.update(acc_vars, key1, [right], &union(&1 -- left_value, [right]))}
@@ -722,7 +721,6 @@ defmodule Types do
     end
   end
 
-  # TODO: Support multiple args
   defp of({{:., _, [fun]}, meta, args}, state) do
     with {:ok, fun, fun_state} <- of(fun, state),
          {:ok, args, arity, state} <- args(args, replace_vars(fun_state, state), &of/2) do
@@ -755,75 +753,129 @@ defmodule Types do
 
   defp of_var_apply(var_ctx, var_counter, meta, [arg_types], arity, state) do
     %{inferred: inferred, counter: counter, var_apply: var_apply} = state
+    var_applies = Map.get(var_apply, var_counter, [])
 
-    if of_var_apply_has_counter?([arg_types], var_counter) do
-      error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], arg_types, arity})
-    else
-      case of_var_apply_unify(var_counter, [arg_types], arity, inferred) do
-        {:match, types, return, inferred} ->
-          inferred = Map.put(inferred, var_counter, types)
-          ok(return, %{state | inferred: inferred})
-        {:nomatch, []} ->
-          :error
-        {:nomatch, types} ->
-          return = [{:var, var_ctx, counter}]
+    # We allow only a limited for of rank 2 intersections where
+    # type variables in one clause do not affect type variables
+    # in other clauses. This means we need to carefully check the
+    # argument types input considering that:
+    #
+    #   1. if a variable is called passing itself as an argument,
+    #      such as `x.(x)`, it is a recursive call that would have
+    #      type a ^ (a -> b) which is not supported
+    #
+    #   2. if a variable is called with the result of a previous
+    #      invocation on the same variable, such as `x.(x.(y))`,
+    #      we need to guarantee all variables returned as a result
+    #      of the parent invocation are resolved. For example, the
+    #      snippet above would return (a -> b) & (b -> c) which we
+    #      don't support, so we attempt to resolve it and get instead
+    #      the more restrict type (a -> a).
+    #
+    #   3. if there is no recursion, then we are good to go.
+    case of_var_apply_recur([arg_types], var_counter, var_applies) do
+      :self ->
+        error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], arg_types, arity})
+      var_recur ->
+        var_recur = Enum.uniq(var_recur)
 
-          types =
-            for {:fn, clauses, arity} <- types do
-              {:fn, of_var_apply_clauses(clauses, [arg_types], return), arity}
-            end
+        case of_var_apply_unify(var_counter, [arg_types], arity, inferred, var_recur) do
+          {{:match, return, inferred}, types} ->
+            inferred = Map.put(inferred, var_counter, types)
+            ok(return, %{state | inferred: inferred})
+          {:recursive, _} ->
+            error(meta, {:disjoint_var_apply, [var_ctx, [arg_types]]})
+          {:nomatch, []} ->
+            error(meta, {:disjoint_var_apply, [var_ctx, [arg_types]]})
+          {:nomatch, types} ->
+            return = [{:var, var_ctx, counter}]
 
-          inferred =
-            inferred
-            |> Map.put(counter, [])
-            |> Map.put(var_counter, types)
+            types =
+              for {:fn, clauses, arity} <- types do
+                {:fn, of_var_apply_clauses(clauses, [arg_types], return), arity}
+              end
 
-          var_apply =
-            Map.update(var_apply, var_counter, [counter], &[counter | &1])
+            inferred =
+              inferred
+              |> Map.put(counter, [])
+              |> Map.put(var_counter, types)
 
-          ok(return, %{state | inferred: inferred, counter: counter + 1, var_apply: var_apply})
-      end
+            var_apply =
+              Map.put(var_apply, var_counter, [counter | var_applies])
+
+            ok(return, %{state | inferred: inferred, counter: counter + 1, var_apply: var_apply})
+        end
     end
   end
 
-  defp of_var_apply_has_counter?(types, var_counter) do
-    traverse_args(types, false, fn
-      {:var, _, ^var_counter}, false -> {:ok, true}
-      _type, found? -> {:ok, found?}
+  defp of_var_apply_recur(types, var_counter, var_applies) do
+    traverse_args(types, [], fn
+      {:var, _, ^var_counter}, _ ->
+        {:ok, :self}
+      {:var, _, counter}, acc when is_list(acc) ->
+        {:ok, if(counter in var_applies, do: [counter | acc], else: acc)}
+      _type, acc ->
+        {:ok, acc}
     end) |> elem(1)
   end
 
-  defp of_var_apply_unify(key, args, arity, inferred) do
+  defp of_var_apply_unify(key, args, arity, inferred, recur) do
     case Map.fetch!(inferred, key) do
       [] ->
         {:nomatch, [{:fn, [], arity}]}
       existing ->
         funs = for {:fn, _, ^arity} = fun <- existing, do: fun
 
-        case of_var_apply_fn(funs, args, inferred, inferred) do
-          {return, inferred} -> {:match, funs, return, inferred}
-          :error -> {:nomatch, funs}
-        end
+        {case recur do
+          [] -> of_var_apply_unify_equal(funs, args, inferred)
+          _  -> of_var_apply_unify_recur(funs, args, recur, inferred, [], inferred)
+         end, funs}
     end
   end
 
-  defp of_var_apply_fn([{:fn, clauses, _} | funs], args, inferred, acc_inferred) do
-    of_var_apply_fn(clauses, funs, args, inferred, acc_inferred)
+  defp of_var_apply_unify_recur([{:fn, clauses, _} | funs], args, recur, inferred, sum, acc_inferred) do
+    of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
   end
-  defp of_var_apply_fn([], _args, _inferred, _acc_inferred) do
-    :error
-  end
-
-  defp of_var_apply_fn([{head, body, _} | clauses], funs, args, inferred, acc_inferred) do
-    case unify_args(head, args, [], inferred, inferred, acc_inferred) do
-      {:match, _, _, acc_inferred} ->
-        {body, acc_inferred}
-      _ ->
-        of_var_apply_fn(clauses, funs, args, inferred, acc_inferred)
+  defp of_var_apply_unify_recur([], _args, recur, _inferred, sum, acc_inferred) do
+    if acc_inferred |> Map.take(recur) |> Enum.all?(fn {_, types} -> types != [] end) do
+      {:match, sum, acc_inferred}
+    else
+      :recursive
     end
   end
-  defp of_var_apply_fn([], funs, args, inferred, acc_inferred) do
-    of_var_apply_fn(funs, args, inferred, acc_inferred)
+
+  defp of_var_apply_unify_recur([{head, [{:var, _, var_recur}] = body, _} | clauses],
+                                funs, args, recur, inferred, sum, acc_inferred) do
+    with true <- var_recur in recur,
+         {:match, _, _, acc_inferred} <-
+           unify_args(args, head, [], inferred, inferred, acc_inferred) do
+      of_var_apply_unify_recur(clauses, funs, args, recur, inferred, union(body, sum), acc_inferred)
+    else
+      _ -> of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
+    end
+  end
+  defp of_var_apply_unify_recur([_ | clauses], funs, args, recur, inferred, sum, acc_inferred) do
+    of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
+  end
+  defp of_var_apply_unify_recur([], funs, args, recur, inferred, sum, acc_inferred) do
+    of_var_apply_unify_recur(funs, args, recur, inferred, sum, acc_inferred)
+  end
+
+  defp of_var_apply_unify_equal([{:fn, clauses, _} | funs], args, inferred) do
+    of_var_apply_unify_equal(clauses, funs, args, inferred)
+  end
+  defp of_var_apply_unify_equal([], _args, _inferred) do
+    :nomatch
+  end
+
+  defp of_var_apply_unify_equal([{args, body, _} | _clauses], _funs, args, inferred) do
+    {:match, body, inferred}
+  end
+  defp of_var_apply_unify_equal([_ | clauses], funs, args, inferred) do
+    of_var_apply_unify_equal(clauses, funs, args, inferred)
+  end
+  defp of_var_apply_unify_equal([], funs, args, inferred) do
+    of_var_apply_unify_equal(funs, args, inferred)
   end
 
   defp of_var_apply_clauses(clauses, args, return) do
@@ -956,12 +1008,30 @@ defmodule Types do
 
       # Go through all arguments and expand what
       # we are not keeping and is not from upstream.
-      {head, _} =
+      {head, head_used} =
         bind_args([arg], %{}, acc_inferred, preserve)
+
+      # If there are variables in the head that are not in match
+      # counters, and we have not inferred about them, we need to
+      # hoist them up.
+      hoist =
+        for counter <- Map.keys(head_used) -- match_counters,
+            not Map.has_key?(inferred, counter),
+            do: counter
+
+      {head, body} =
+        case hoist do
+          [] ->
+            {head, body}
+          _ ->
+            {head, _} = traverse_args(head, hoist, &of_clauses_hoist/2)
+            {body, _} = traverse(body, hoist, &of_clauses_hoist/2)
+            {head, body}
+        end
 
       # Build our final list of bindings.
       clause_inferred =
-        for counter <- match_counters,
+        for counter <- hoist ++ match_counters,
             {value, _} = bind(Map.get(inferred, counter, []), acc_inferred, preserve),
             do: {counter, value},
             into: %{}
@@ -973,6 +1043,20 @@ defmodule Types do
   defp of_clauses([], _state, acc_clauses, acc_state) do
     {:ok, :lists.reverse(acc_clauses), acc_state}
   end
+
+  defp of_clauses_hoist({:fn, clauses, arity}, hoist) do
+    clauses =
+      for {head, body, inferred} <- clauses do
+        {head, _} = traverse_args(head, hoist, &of_clauses_hoist/2)
+        {body, _} = traverse(body, hoist, &of_clauses_hoist/2)
+        {head, body, Map.drop(inferred, hoist)}
+      end
+    {:replace, {:fn, clauses, arity}, hoist}
+  end
+  defp of_clauses_hoist(_, hoist) do
+    {:ok, hoist}
+  end
+
 
   ## Blocks
 
