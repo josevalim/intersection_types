@@ -597,9 +597,8 @@ defmodule Types.CheckerTest do
       #   {x.(z), x.(:foo)}
       # end) |> format() == "((:foo -> a; atom() -> b) -> {b, a})"
 
-      # TODO: Test me.
-      # assert quoted_of(fn x -> fn y -> {x.(y), y.(x)} end end) |> format() ==
-      #        "((a -> a; :foo -> b) -> (a -> {a, b}))"
+      assert {:error, _, {:occurs, _, _, _, _}} =
+             quoted_of(fn x -> fn y -> {x.(y), y.(x)} end end)
 
       assert {:error, _, {:recursive_fn, _, _, _}} =
              quoted_of(fn x -> x.(x) end)

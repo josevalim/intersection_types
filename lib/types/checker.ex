@@ -414,6 +414,8 @@ defmodule Types.Checker do
     #   3. if there is no recursion, then we are good to go.
     #
     case of_var_apply_recur([arg_types], var_counter, var_applies, var_rank, ranks) do
+      {{:occurs, counter}, _move_up} ->
+        error(meta, {:occurs, [{:var, var_ctx, var_counter}], counter, arg_types, arity})
       {:self, _move_up} ->
         error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], arg_types, arity})
       {var_recur, move_up} ->
@@ -465,10 +467,13 @@ defmodule Types.Checker do
         if counter in var_applies do
           {:ok, {[counter | acc_applies], acc_ranks}}
         else
-          case ranks do
-            %{^counter => rank} when rank > var_rank ->
+          {rank, deps} = Map.fetch!(ranks, counter)
+          cond do
+            var_counter in deps ->
+              {:ok, {{:occurs, counter}, acc_ranks}}
+            rank > var_rank ->
               {:ok, {acc_applies, [counter | acc_ranks]}}
-            %{} ->
+            true ->
               {:ok, {acc_applies, acc_ranks}}
           end
         end
