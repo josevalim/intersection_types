@@ -89,9 +89,9 @@ defmodule Types do
 
     * Types and Programming Languages, 3rd edition (Benjamin C. Pierce)
 
-    * On Understanding Types, Data Abstraction, and Polymorphism (Luca Cardelli,)
+    * On Understanding Types, Data Abstraction, and Polymorphism (Luca Cardelli)
 
-    * How OCaml type checker works (Oleg Kiselyo, 2013)
+    * How OCaml type checker works (Oleg Kiselyo)
 
   ### Intersection types
 

@@ -5,13 +5,13 @@ defmodule Types.CheckerTest do
 
   defp types({:ok, types, %{inferred: inferred}}) do
     types
-    |> Checker.bind(inferred, %{})
+    |> Checker.bind(inferred)
     |> elem(0)
   end
 
   defp format({:ok, types, %{inferred: inferred}}) do
     types
-    |> Checker.bind(inferred, %{})
+    |> Checker.bind(inferred)
     |> elem(0)
     |> Union.to_iodata()
     |> IO.iodata_to_binary()
@@ -165,13 +165,16 @@ defmodule Types.CheckerTest do
              "{(a -> {(b -> b), (c -> c)}), (d -> {(e -> e), (f -> f)})}"
 
       assert quoted_of((y = fn x -> fn y -> x.(x.(y)) end end; {y, y})) |> format() ==
-              "{((a -> a) -> (a -> a)), ((b -> b) -> (b -> b))}"
+             "{((a -> a) -> (a -> a)), ((b -> b) -> (b -> b))}"
+
+      assert quoted_of((w = fn x -> fn y -> fn z -> x.(y.(z)) end end end; {w, w})) |> format() ==
+             "{((a -> b) -> ((c -> a) -> (c -> b))), ((d -> e) -> ((f -> d) -> (f -> e)))}"
 
       assert quoted_of(fn x -> y = x; y end) |> format() ==
              "(a -> a)"
 
       assert quoted_of(fn x -> y = fn z -> x.(z) end; {y, y} end) |> format() ==
-             "((a -> b) -> {(c -> b), (d -> b)})"
+             "((a -> b) -> {(a -> b), (a -> b)})"
 
       assert quoted_of(fn x -> z = fn y -> {x, y} end; {z, z} end) |> format() ==
              "(a -> {(b -> {a, b}), (c -> {a, c})})"
@@ -594,6 +597,10 @@ defmodule Types.CheckerTest do
       #   {x.(z), x.(:foo)}
       # end) |> format() == "((:foo -> a; atom() -> b) -> {b, a})"
 
+      # TODO: Test me.
+      # assert quoted_of(fn x -> fn y -> {x.(y), y.(x)} end end) |> format() ==
+      #        "((a -> a; :foo -> b) -> (a -> {a, b}))"
+
       assert {:error, _, {:recursive_fn, _, _, _}} =
              quoted_of(fn x -> x.(x) end)
     end
@@ -626,23 +633,42 @@ defmodule Types.CheckerTest do
                      %{1 => []}}], 1}],
                 %{0 => []}}], 1}]
 
-      assert {:ok,
-              [{:fn,
-               [{_, _, %{1 => [], 2 => []}}],
-               1}],
-              _} = quoted_of(fn x -> fn y -> x.(y) end end)
+      assert quoted_of(fn x -> fn y -> x.(y) end end) |> elem(1) ==
+             [{:fn,
+              [{[[{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}], %{}}], 1}]],
+                [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}], %{}}], 1}],
+                %{1 => [], 2 => []}}], 1}]
 
-      assert {:ok,
-              [{:fn,
-               [{_, _, %{1 => []}}],
-               1}],
-              _} = quoted_of(fn x -> fn y -> x.(x.(y)) end end)
+      assert quoted_of(fn x -> fn y :: atom() -> x.(y) end end) |> elem(1) ==
+             [{:fn,
+              [{[[{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}], %{}}], 1}]],
+                [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}], %{}}], 1}],
+                %{1 => [:atom], 2 => []}}], 1}]
 
-      assert {:ok,
-              [{:fn,
-               [{_, _, %{2 => []}}],
-               1}],
-              _} = quoted_of(fn x -> fn y -> fn z -> x.(x.(z)) end end end)
+      assert quoted_of(fn x -> fn y -> x.(x.(y)) end end) |> elem(1) ==
+             [{:fn,
+              [{[[{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], %{}}], 1}]],
+                [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], %{}}], 1}],
+                %{1 => []}}],
+              1}]
+
+      assert quoted_of(fn x -> fn y -> fn z -> x.(x.(z)) end end end) |> elem(1) ==
+             [{:fn,
+               [{[[{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:z, nil}, 2}], %{}}], 1}]],
+                 [{:fn,
+                   [{[[{:var, {:y, nil}, 1}]],
+                   [{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:z, nil}, 2}], %{}}], 1}],
+                   %{1 => []}}], 1}],
+                 %{2 => []}}], 1}]
+
+      assert quoted_of(fn x -> fn y -> fn z -> x.(y.(z)) end end end) |> elem(1) ==
+             [{:fn,
+               [{[[{:fn, [{[[{:var, {:y, nil}, 3}]], [{:var, {:x, nil}, 4}], %{}}], 1}]],
+                 [{:fn,
+                   [{[[{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:y, nil}, 3}], %{}}], 1}]],
+                     [{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:x, nil}, 4}], %{}}], 1}],
+                     %{2 => []}}], 1}],
+                 %{3 => [], 4 => []}}], 1}]
     end
   end
 end

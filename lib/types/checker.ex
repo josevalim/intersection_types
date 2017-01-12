@@ -197,8 +197,12 @@ defmodule Types.Checker do
          Map.update(type_vars, key, [type], &Union.union(&1, [type])),
          Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
       value ->
+        # We find which values we are allowed to keep. In case var is
+        # comes from the left side, it may actually point to a variable
+        # on the right side, which means we must always pass value on
+        # the right.
         with {_, [_ | _] = match, type_vars, acc_vars} <-
-               unify(value, [type], keep, vars, type_vars, acc_vars) do
+               unify([type], value, keep, vars, type_vars, acc_vars) do
           {:match,
            Map.update(type_vars, key, match, &Union.union(&1 -- value, match)),
            Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))}
@@ -275,35 +279,41 @@ defmodule Types.Checker do
   @doc """
   Binds the variables to their types.
 
-  A set of variables to not be replaced can be given, useful
-  to guarantee anonymous functions only interpolate variables
-  introduced by themselves.
+  It binds only variables with rank equal to or
+  greater than the current rank.
+
+  It returns all variables that belong exactly
+  to the current rank that have been bound.
   """
-  def bind(types, vars, preserve \\ %{}) do
-    bind(types, %{}, vars, preserve)
+  def bind(types, vars) do
+    bind(types, [], vars, 0, %{})
   end
 
-  defp bind(types, used, vars, preserve) do
-    Union.traverse(types, used, fn
-      {:var, _, key}, used ->
-        {value, used} =
-          case Map.fetch(preserve, key) do
-            {:ok, value} -> {value, used}
-            :error -> {[], Map.put(used, key, true)}
+  def bind(types, counters, vars, rank, ranks) do
+    Union.traverse(types, counters, fn
+      {:var, _, counter}, counters ->
+        {current_rank, _} = Map.get(ranks, counter, {0, []})
+
+        if current_rank >= rank do
+          counters = List.delete(counters, counter)
+
+          case Map.get(vars, counter, []) do
+            [_ | _] = existing ->
+              {:union, existing, counters}
+            _ ->
+              {:ok, counters}
           end
-        case Map.get(vars, key, []) do
-          [_ | _] = existing when value == [] ->
-            {:union, existing, used}
-          _ ->
-            {:ok, used}
+        else
+          {:ok, counters}
         end
-      _, used ->
-        {:ok, used}
+
+      _, counters ->
+        {:ok, counters}
     end)
   end
 
-  defp bind_args(args, used, vars, preserve) do
-    Enum.map_reduce(args, used, &bind(&1, &2, vars, preserve))
+  defp bind_args(args, counters, vars, rank, ranks) do
+    Enum.map_reduce(args, counters, &bind(&1, &2, vars, rank, ranks))
   end
 
   @doc """
@@ -324,9 +334,9 @@ defmodule Types.Checker do
     end
   end
 
-  defp of({:fn, _, clauses}, state) do
-    with {:ok, clauses, state} <- of_clauses(clauses, state) do
-      ok([{:fn, clauses, 1}], state)
+  defp of({:fn, _, clauses}, %{rank: rank} = state) do
+    with {:ok, clauses, state} <- of_clauses(clauses, %{state | rank: rank + 1}) do
+      ok([{:fn, clauses, 1}], %{state | rank: rank})
     end
   end
 
@@ -380,8 +390,9 @@ defmodule Types.Checker do
   ### Var apply
 
   defp of_var_apply(var_ctx, var_counter, meta, [arg_types], arity, state) do
-    %{inferred: inferred, counter: counter, var_apply: var_apply} = state
-    var_applies = Map.get(var_apply, var_counter, [])
+    %{inferred: inferred, counter: counter, ranks: ranks, applies: applies} = state
+    {var_rank, var_deps} = Map.fetch!(ranks, var_counter)
+    var_applies = Map.get(applies, var_counter, [])
 
     # We allow only a limited for of rank 2 intersections where
     # type variables in one clause do not affect type variables
@@ -401,10 +412,11 @@ defmodule Types.Checker do
     #      the more restrict type (a -> a).
     #
     #   3. if there is no recursion, then we are good to go.
-    case of_var_apply_recur([arg_types], var_counter, var_applies) do
-      :self ->
+    #
+    case of_var_apply_recur([arg_types], var_counter, var_applies, var_rank, ranks) do
+      {:self, _move_up} ->
         error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], arg_types, arity})
-      var_recur ->
+      {var_recur, move_up} ->
         var_recur = Enum.uniq(var_recur)
 
         case of_var_apply_unify(var_counter, [arg_types], arity, inferred, var_recur) do
@@ -428,20 +440,38 @@ defmodule Types.Checker do
               |> Map.put(counter, [])
               |> Map.put(var_counter, types)
 
-            var_apply =
-              Map.put(var_apply, var_counter, [counter | var_applies])
+            applies =
+              Map.put(applies, var_counter, [counter | var_applies])
 
-            ok(return, %{state | inferred: inferred, counter: counter + 1, var_apply: var_apply})
+            ranks =
+              move_up
+              |> Enum.reduce(ranks, fn up_counter, ranks ->
+                Map.update!(ranks, up_counter, fn {_, deps} -> {var_rank, deps} end)
+              end)
+              |> Map.put(var_counter, {var_rank, [counter | move_up] ++ var_deps})
+              |> Map.put(counter, {var_rank, []})
+
+            ok(return, %{state | inferred: inferred, counter: counter + 1,
+                                 applies: applies, ranks: ranks})
         end
     end
   end
 
-  defp of_var_apply_recur(types, var_counter, var_applies) do
-    Union.traverse_args(types, [], fn
-      {:var, _, ^var_counter}, _ ->
-        {:ok, :self}
-      {:var, _, counter}, acc when is_list(acc) ->
-        {:ok, if(counter in var_applies, do: [counter | acc], else: acc)}
+  defp of_var_apply_recur(types, var_counter, var_applies, var_rank, ranks) do
+    Union.traverse_args(types, {[], []}, fn
+      {:var, _, ^var_counter}, {_, acc_ranks} ->
+        {:ok, {:self, acc_ranks}}
+      {:var, _, counter}, {acc_applies, acc_ranks} when is_list(acc_applies) ->
+        if counter in var_applies do
+          {:ok, {[counter | acc_applies], acc_ranks}}
+        else
+          case ranks do
+            %{^counter => rank} when rank > var_rank ->
+              {:ok, {acc_applies, [counter | acc_ranks]}}
+            %{} ->
+              {:ok, {acc_applies, acc_ranks}}
+          end
+        end
       _type, acc ->
         {:ok, acc}
     end) |> elem(1)
@@ -506,6 +536,7 @@ defmodule Types.Checker do
     of_var_apply_unify_equal(funs, args, inferred)
   end
 
+  # TODO: Ensure variables are kept at the end on of_var_apply_clauses
   defp of_var_apply_clauses(clauses, args, return) do
     {pre, pos} =
       Enum.split_while(clauses, fn {head, _, _} ->
@@ -602,70 +633,55 @@ defmodule Types.Checker do
     of_clauses(clauses, state, [], state)
   end
 
-  defp of_clauses([{:->, _, [[arg], body]} | clauses],
-                   %{inferred: preserve} = state, acc_clauses, acc_state) do
+  defp of_clauses([{:->, _, [[arg], body]} | clauses], state, acc_clauses, acc_state) do
     with {:ok, arg, %{match: match, vars: vars} = acc_state} <- of_pattern(arg, acc_state),
          acc_state = %{acc_state | vars: Map.merge(vars, match)},
          {:ok, body, acc_state} <- of(body, acc_state) do
+      %{inferred: inferred, ranks: ranks, rank: rank} = acc_state
       acc_state = replace_vars(acc_state, state)
-      %{inferred: inferred, var_apply: var_apply} = acc_state
 
-      # Get all variables introduced in the function head.
-      match_counters =
+      # Get all variables introduced in the function head,
+      # including the ones that may have come as part of
+      # applies.
+      #
+      # Then we check they belong to the current rank and
+      # make sure they are either free or are a supertype.
+      clause_counters =
         for {_, [{:var, _, key}]} <- match,
-            counter <- [key | Map.get(var_apply, key, [])],
-            do: counter
-
-      # We will expand all entries except the upper scope
-      # and except the match counters.
-      {body, body_used} =
-        bind(body, Map.drop(inferred, match_counters), preserve)
-
-      # We must only keep counters that are free OR have been
-      # used and are a super type.
-      match_counters =
-        for counter <- match_counters,
+            counter <- of_clauses_deps([key], rank, ranks),
             value = Map.get(inferred, counter, []),
-            value == [] or (Map.has_key?(body_used, counter) and Union.supertype?(value)),
+            Union.supertype?(value),
             do: counter
 
-      # The outer scope is going to keep all variables except
-      # the ones we have been abstracting away. That's because
-      # an outer scope may be pointing to an inner scope.
-      acc_inferred = Map.drop(inferred, match_counters)
+      # We will expand everything that is not in the clause
+      # counters and belong to the current rank.
+      expand = Map.drop(inferred, clause_counters)
+      {body, unused_counters} = bind(body, clause_counters, expand, rank, ranks)
 
-      # Go through all arguments and expand what
-      # we are not keeping and is not from upstream.
-      {head, head_used} =
-        bind_args([arg], %{}, acc_inferred, preserve)
+      # If there is a clause variable that was not used in the body,
+      # and it is not free, we shall expand it.
+      {unused_counters, expand} =
+        Enum.reduce(unused_counters, {[], expand}, fn counter, {counters, expand} ->
+          case Map.get(inferred, counter, []) do
+            [] -> {counters, expand}
+            types -> {[counter | counters], Map.put(expand, counter, types)}
+          end
+        end)
 
-      # If there are variables in the head that are not in match
-      # counters, and we have not inferred about them, we need to
-      # hoist them up.
-      # TODO: Remove hoisting by tracking the level of variables.
-      hoist =
-        for counter <- Map.keys(head_used) -- match_counters,
-            not Map.has_key?(inferred, counter),
-            do: counter
+      # Go through all arguments and expand what we are not keeping.
+      {head, _} = bind_args([arg], [], expand, rank, ranks)
 
-      {head, body} =
-        case hoist do
-          [] ->
-            {head, body}
-          _ ->
-            {head, _} = Union.traverse_args(head, hoist, &of_clauses_hoist/2)
-            {body, _} = Union.traverse(body, hoist, &of_clauses_hoist/2)
-            {head, body}
-        end
+      # Remove the unused counters.
+      clause_counters = clause_counters -- unused_counters
 
-      # Build our final list of bindings.
+      # And build both clause_inferred and acc_inferred.
       clause_inferred =
-        for counter <- hoist ++ match_counters,
-            {value, _} = bind(Map.get(inferred, counter, []), acc_inferred, preserve),
+        for counter <- clause_counters,
+            {value, _} = bind(Map.get(inferred, counter, []), [], expand, rank, ranks),
             do: {counter, value},
             into: %{}
 
-      acc_state = %{acc_state | inferred: acc_inferred}
+      acc_state = %{acc_state | inferred: Map.drop(inferred, clause_counters)}
       of_clauses(clauses, state, [{head, body, clause_inferred} | acc_clauses], acc_state)
     end
   end
@@ -673,17 +689,14 @@ defmodule Types.Checker do
     {:ok, :lists.reverse(acc_clauses), acc_state}
   end
 
-  defp of_clauses_hoist({:fn, clauses, arity}, hoist) do
-    clauses =
-      for {head, body, inferred} <- clauses do
-        {head, _} = Union.traverse_args(head, hoist, &of_clauses_hoist/2)
-        {body, _} = Union.traverse(body, hoist, &of_clauses_hoist/2)
-        {head, body, Map.drop(inferred, hoist)}
-      end
-    {:replace, {:fn, clauses, arity}, hoist}
+  defp of_clauses_deps([key | keys], rank, ranks) do
+    case Map.fetch!(ranks, key) do
+      {^rank, deps} -> [key | of_clauses_deps(deps ++ keys, rank, ranks)]
+      {_, _} -> of_clauses_deps(keys, rank, ranks)
+    end
   end
-  defp of_clauses_hoist(_, hoist) do
-    {:ok, hoist}
+  defp of_clauses_deps([], _rank, _ranks) do
+    []
   end
 
   ## Blocks
@@ -757,22 +770,14 @@ defmodule Types.Checker do
     literal(other, vars, &of_pattern_each/2)
   end
 
-  defp of_pattern_var(_meta, var_ctx, state) do
-    %{match: match, counter: counter, inferred: inferred} = state
-
+  defp of_pattern_var(_meta, var_ctx, %{match: match} = state) do
     case Map.fetch(match, var_ctx) do
-      {:ok, type} ->
-        ok(type, state)
-      :error ->
-        inferred = Map.put(inferred, counter, [])
-        return = [{:var, var_ctx, counter}]
-        match = Map.put(match, var_ctx, return)
-        ok(return, %{state | match: match, counter: counter + 1, inferred: inferred})
+      {:ok, type} -> ok(type, state)
+      :error -> of_pattern_bind_var(match, var_ctx, [], state)
     end
   end
 
-  defp of_pattern_bound_var(meta, var_ctx, types, state) do
-    %{match: match, counter: counter, inferred: inferred} = state
+  defp of_pattern_bound_var(meta, var_ctx, types, %{match: match, inferred: inferred} = state) do
     case Map.fetch(match, var_ctx) do
       {:ok, [{:var, _, counter}] = return} ->
         case Map.fetch!(inferred, counter) do
@@ -780,11 +785,18 @@ defmodule Types.Checker do
           other -> error(meta, {:bound_var, var_ctx, other, types})
         end
       :error ->
-        inferred = Map.put(inferred, counter, types)
-        return = [{:var, var_ctx, counter}]
-        match = Map.put(match, var_ctx, return)
-        ok(return, %{state | match: match, counter: counter + 1, inferred: inferred})
+        of_pattern_bind_var(match, var_ctx, types, state)
     end
+  end
+
+  defp of_pattern_bind_var(match, var_ctx, types, state) do
+    %{counter: counter, inferred: inferred, rank: rank, ranks: ranks} = state
+    inferred = Map.put(inferred, counter, types)
+    return = [{:var, var_ctx, counter}]
+    match = Map.put(match, var_ctx, return)
+    ranks = Map.put(ranks, counter, {rank, []})
+    ok(return, %{state | match: match, counter: counter + 1,
+                         inferred: inferred, ranks: ranks})
   end
 
   ## Helpers
@@ -838,10 +850,15 @@ defmodule Types.Checker do
 
   ## State helpers
 
-  # The :vars map keeps all Elixir variables and their types
+  # :counter keeps the variable counter (de brujin indexes)
+  # :rank keeps the function rank
   # The :match map keeps all Elixir variables defined in a match
-  # The :inferred map keeps track of all inferred types (they have a counter)
-  @state %{vars: %{}, match: %{}, inferred: %{}, counter: 0, var_apply: %{}}
+  # The :vars map keeps all Elixir variables and their types
+  # The :inferred map keeps track of all inferred types
+  # The :applies map keeps all variables that were introduced by applying on a var
+  # The :ranks map keeps the variable rank as well as all rank variables
+  @state %{counter: 0, rank: 0, match: %{}, vars: %{},
+           inferred: %{}, applies: %{}, ranks: %{}}
 
   defp state do
     @state
