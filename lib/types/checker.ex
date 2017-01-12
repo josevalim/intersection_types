@@ -541,7 +541,6 @@ defmodule Types.Checker do
     of_var_apply_unify_equal(funs, args, inferred)
   end
 
-  # TODO: Ensure variables are kept at the end on of_var_apply_clauses
   defp of_var_apply_clauses(clauses, args, return) do
     {pre, pos} =
       Enum.split_while(clauses, fn {head, _, _} ->
@@ -565,8 +564,6 @@ defmodule Types.Checker do
 
   # If we have matched all arguments and we haven't inferred anything new,
   # it means they are literals and there is no need for an exhaustive search.
-  # TODO: If we have multiple arguments. We need to generate a cartesian
-  # product of all of them and ensure all of them have a match.
   defp of_fn_apply_each(_clauses, _arg, inferred, [], inferred, acc_body) do
     {:ok, inferred, acc_body}
   end

@@ -252,10 +252,6 @@ defmodule Types.Union do
     end
   end
 
-  defp qualify({:fn, left, arity}, {:fn, right, arity}, lvars, rvars) do
-    qualify_fn(left, right, lvars, rvars, :equal)
-  end
-
   defp qualify(:atom, {:value, atom}, lvars, rvars) when is_atom(atom), do: {:superset, lvars, rvars}
   defp qualify({:value, atom}, :atom, lvars, rvars) when is_atom(atom), do: {:subset, lvars, rvars}
 
@@ -264,31 +260,6 @@ defmodule Types.Union do
   end
 
   defp qualify(_, _, lvars, rvars), do: {:disjoint, lvars, rvars}
-
-  defp qualify_fn([{left_head, left_body, left_inferred} | lefties], righties, lvars, rvars, kind) do
-    fn_lvars = Map.merge(lvars, left_inferred)
-
-    row =
-      for {right_head, right_body, right_inferred} <- righties do
-        fn_rvars = Map.merge(rvars, right_inferred)
-        qualify_args([left_body | left_head], [right_body | right_head], fn_lvars, fn_rvars, :equal)
-      end
-
-    case qualify_fn(row, kind, false) do
-      :disjoint -> {:disjoint, lvars, rvars}
-      kind -> qualify_fn(lefties, righties, lvars, rvars, kind)
-    end
-  end
-  defp qualify_fn([], _righties, lvars, rvars, kind) do
-    {kind, lvars, rvars}
-  end
-
-  defp qualify_fn([{:disjoint, _, _} | row], kind, matched?), do: qualify_fn(row, kind, matched?)
-  defp qualify_fn([{kind, _, _} | row], :equal, _matched?), do: qualify_fn(row, kind, true)
-  defp qualify_fn([{kind, _, _} | row], kind, _matched?), do: qualify_fn(row, kind, true)
-  defp qualify_fn([_ | _], _, _matched?), do: :disjoint
-  defp qualify_fn([], _kind, false), do: :disjoint
-  defp qualify_fn([], kind, true), do: kind
 
   @doc """
   Qualifies multiple arguments.

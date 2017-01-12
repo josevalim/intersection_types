@@ -64,31 +64,4 @@ defmodule Types.UnionTest do
              [{:tuple, [[:atom, :integer], [:atom]], 2}]
     end
   end
-
-  # TODO: Rewrite those using unions.
-  # test "fns" do
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn x -> x end, fn y -> y end}) |> types()
-  #   assert Types.intersection(left, right) == {left, [], []}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn :foo -> :foo end, fn y :: atom() -> y end}) |> types()
-  #   assert Types.intersection(left, right) == {left, [], []}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn y :: atom() -> y end, fn :foo -> :foo end}) |> types()
-  #   assert Types.intersection(left, right) == {right, right, left}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn :foo -> :foo; :bar -> :bar end, fn y :: atom() -> y end}) |> types()
-  #   assert Types.intersection(left, right) == {left, [], []}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn y :: atom() -> y end, fn :foo -> :foo; :bar -> :bar end}) |> types()
-  #   assert Types.intersection(left, right) == {right, right, left}
-
-  #   [{:tuple, [left, right], _}] =
-  #     quoted_of({fn x :: integer() -> x end, fn y :: atom() -> y end}) |> types()
-  #   assert Types.intersection(left, right) == {[], [], left}
-  # end
 end
