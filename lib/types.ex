@@ -97,16 +97,17 @@ defmodule Types do
 
   The following papers explore the ides behind intersection types.
 
-  * What are principal typings and what are they good for? (Trevor Jim)
-    This paper describes a Rank 2 intersection type system. Elixir
-    implements a subset of such system where intersections can only
-    be expressed as independent function clauses. This means we can't
-    infer the type for `x.(x)` (as it is the intersection between a
-    type variable and a function) and the type inferred for `x.(x.(y))`
-    is unified to the same type as in a Hindley-Milner type system
-    (as it is the intersection between two dependent clauses). However,
-    we do infer the type for `{x.(:foo), x.(:bar)}` using intersection
-    types by inferring it to a function with multiple clauses.
+    * What are principal typings and what are they good for? (Trevor Jim)
+      This paper describes rank 2 intersection type systems. Elixir
+      implements a subset of the polar type system where intersections
+      can only be expressed as independent function clauses. This means
+      we can't infer the type for `x.(x)`, as it has the type `(a ^ (a -> b))`
+      which is the intersection between a type variable and a function.
+      Similarly, for `x.(x.(y))` we infer the same type as in a Hindley-Milner
+      type system as otherwise it would have the type `(a -> b) ^ (b -> c)`
+      which causes dependency between clauses. However, for expressions
+      such as `{x.(:foo), x.(:bar)}`, we infer the proper intersection
+      type `(:bar -> a) ^ (:foo -> b)` expressed as `(:bar -> a; :foo -> b)`.
 
   ### Erlang papers
 

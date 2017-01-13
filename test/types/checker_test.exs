@@ -300,11 +300,11 @@ defmodule Types.CheckerTest do
       end) |> format() == "(atom() -> :bar | :baz)"
     end
 
-    # Although rank 2 intersection types do not require let polymorphism,
-    # we implement them to avoid having to rearrange ASTs into let formats.
-    # Papers such as "Let should not be generalized" argue against this
-    # in terms of simplicity on type systems that have constraints (although
-    # we haven't reached such trade-offs yet).
+    # Although intersection types do not require let polymorphism,
+    # we implement them to avoid having to rearrange ASTs into let
+    # formats. Papers such as "Let should not be generalized" argue
+    # against this in terms of simplicity on type systems that have
+    # constraints (although we haven't reached such trade-offs yet).
     test "apply on variable" do
       assert {:error, _, {:disjoint_apply, _, _, _}} =
         quoted_of((
@@ -364,13 +364,18 @@ defmodule Types.CheckerTest do
                        (fn x :: atom() -> x end)) |> format() ==
              "(atom() -> atom())"
 
-      # (a -> b; b -> c) multiple clauses
+      # ((a -> a) -> (a -> a)) multiple clauses
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                        (fn :foo -> :foo; :bar -> :bar; :no -> :match end)) |> format() ==
              "(:bar | :foo -> :bar | :foo)"
+
+      # (((b -> b) -> a) -> a) matches
+      assert quoted_of((fn x -> x.(fn y -> y end) end).
+                       (fn x -> {x.(:foo), x.(:bar)} end)) |> format() ==
+             "{:foo, :bar}"
     end
 
-    test "apply on rank 2" do
+    test "apply on intersection types" do
       assert quoted_of((fn x ->
           x.(:foo)
         end).(fn y -> y end)) |> format() == ":foo"
@@ -378,11 +383,6 @@ defmodule Types.CheckerTest do
       assert quoted_of((fn x ->
           {x.(:foo), x.(:bar)}
         end).(fn y -> y end)
-      ) |> format() == "{:foo, :bar}"
-
-      assert quoted_of((fn x ->
-          {x.(:foo), x.(:bar)}
-        end).(fn y :: atom() -> y end)
       ) |> format() == "{:foo, :bar}"
 
       # Same clauses
@@ -414,6 +414,13 @@ defmodule Types.CheckerTest do
         (fn x -> {x.(:foo), x.(:bar)} end).(c)
         c
       )) |> format() == "(a -> a)"
+
+      # Works at multiple levels
+      assert quoted_of(
+        (fn x ->
+          {x.(:foo).(:baz), x.(:bar).(:bat)}
+        end).(fn x -> fn y -> y end end)
+      ) |> format() == "{:baz, :bat}"
     end
 
     test "apply with lazy inference" do
@@ -558,9 +565,6 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn x -> {x.(:foo), x.(:foo)} end) |> format() ==
              "((:foo -> a) -> {a, a})"
 
-      assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> format() ==
-             "((:foo -> a; :bar -> b) -> {a, b})"
-
       assert quoted_of(fn x -> fn y -> {x.(y), x.(:foo)} end end) |> format() ==
              "((a -> b; :foo -> c) -> (a -> {b, c}))"
 
@@ -572,6 +576,15 @@ defmodule Types.CheckerTest do
 
       assert quoted_of(fn x -> fn y -> {x.(x.(y)), x.(:foo)} end end) |> format() ==
              "((a -> a; :foo -> b) -> (a -> {a, b}))"
+
+      assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> format() ==
+             "((:foo -> a; :bar -> b) -> {a, b})"
+
+      assert quoted_of(fn y -> fn x -> {x.(:foo), x.(:bar)} end end) |> format() ==
+             "(a -> ((:foo -> b; :bar -> c) -> {b, c}))"
+
+      assert quoted_of(fn x -> {x.(:foo).(:baz), x.(:bar).(:bat)} end) |> format() ==
+             "((:foo -> (:baz -> a); :bar -> (:bat -> b)) -> {a, b})"
 
       # TODO: Reintroduce those when we have multiple arguments.
       # assert quoted_of(fn x ->
@@ -602,6 +615,9 @@ defmodule Types.CheckerTest do
 
       assert {:error, _, {:recursive_fn, _, _, _}} =
              quoted_of(fn x -> x.(x) end)
+
+      assert {:error, _, {:rank_restriction, _, _, _}} =
+             quoted_of(fn x -> x.(fn y -> {y.(:bar), y.(:baz)} end) end)
     end
 
     test "bindings" do
