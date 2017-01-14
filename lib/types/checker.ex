@@ -229,22 +229,16 @@ defmodule Types.Checker do
   defp unify_fn(left_head, left_body, left_inferred,
                 [{right_head, right_body, right_inferred} | clauses],
                 keep, vars, type_vars, acc_vars, matched?) do
-    vars =
-      vars
-      |> Map.merge(left_inferred)
-      |> Map.merge(right_inferred)
-      |> Map.drop(keep)
-
-    type_vars =
-      type_vars
-      |> Map.merge(left_inferred)
-      |> Map.merge(right_inferred)
-      |> Map.drop(keep)
+    merged = Map.merge(left_inferred, right_inferred)
+    vars = vars |> Map.merge(merged) |> Map.drop(keep)
+    type_vars = type_vars |> Map.merge(merged) |> Map.drop(keep)
 
     with {:match, _, type_vars, acc_vars} <-
-           unify_args(right_head, left_head, keep, vars, type_vars, acc_vars),
+           unify_args(left_head, right_head, keep, vars, type_vars, acc_vars),
+         {right_body, _} =
+           bind(right_body, Map.take(type_vars, Map.keys(right_inferred))),
          {:match, _, type_vars, acc_vars} <-
-           unify(right_body, left_body, keep, type_vars, type_vars, acc_vars) do
+           unify(left_body, right_body, keep, type_vars, type_vars, acc_vars) do
       unify_fn(left_head, left_body, left_inferred, clauses, keep, vars, type_vars, acc_vars, true)
     else
       _ ->

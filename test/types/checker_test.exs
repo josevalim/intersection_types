@@ -373,6 +373,14 @@ defmodule Types.CheckerTest do
       assert quoted_of((fn x -> x.(fn y -> y end) end).
                        (fn x -> {x.(:foo), x.(:bar)} end)) |> format() ==
              "{:foo, :bar}"
+
+      assert quoted_of((fn x -> x.(fn y -> y end) end).
+                       (fn x -> {x, x.(:foo), x.(:bar)} end)) |> format() ==
+             "{(:foo -> :foo; :bar -> :bar), :foo, :bar}"
+
+      assert quoted_of((fn x -> {x, x.(fn y -> y end)} end).
+                       (fn x -> {x.(:foo), x.(:bar)} end)) |> format() ==
+             "{((:bar | :foo -> :bar | :foo) -> {:foo, :bar}), {:foo, :bar}}"
     end
 
     test "apply on intersection types" do
