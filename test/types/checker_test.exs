@@ -615,9 +615,6 @@ defmodule Types.CheckerTest do
 
       assert {:error, _, {:recursive_fn, _, _, _}} =
              quoted_of(fn x -> x.(x) end)
-
-      assert {:error, _, {:rank_restriction, _, _, _}} =
-             quoted_of(fn x -> x.(fn y -> {y.(:bar), y.(:baz)} end) end)
     end
 
     test "bindings" do

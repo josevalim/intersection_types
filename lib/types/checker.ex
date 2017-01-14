@@ -279,22 +279,22 @@ defmodule Types.Checker do
   @doc """
   Binds the variables to their types.
 
-  It binds only variables with rank equal to or
-  greater than the current rank.
+  It binds only variables with level equal to or
+  greater than the current level.
 
   It returns all variables that belong exactly
-  to the current rank that have been bound.
+  to the current level that have been bound.
   """
   def bind(types, vars) do
     bind(types, [], vars, 0, %{})
   end
 
-  def bind(types, counters, vars, rank, ranks) do
+  def bind(types, counters, vars, level, levels) do
     Union.traverse(types, counters, fn
       {:var, _, counter}, counters ->
-        {current_rank, _} = Map.get(ranks, counter, {0, []})
+        {current_level, _} = Map.get(levels, counter, {0, []})
 
-        if current_rank >= rank do
+        if current_level >= level do
           counters = List.delete(counters, counter)
 
           case Map.get(vars, counter, []) do
@@ -312,8 +312,8 @@ defmodule Types.Checker do
     end)
   end
 
-  defp bind_args(args, counters, vars, rank, ranks) do
-    Enum.map_reduce(args, counters, &bind(&1, &2, vars, rank, ranks))
+  defp bind_args(args, counters, vars, level, levels) do
+    Enum.map_reduce(args, counters, &bind(&1, &2, vars, level, levels))
   end
 
   @doc """
@@ -334,9 +334,9 @@ defmodule Types.Checker do
     end
   end
 
-  defp of({:fn, _, clauses}, %{rank: rank} = state) do
-    with {:ok, clauses, state} <- of_clauses(clauses, %{state | rank: rank + 1}) do
-      ok([{:fn, clauses, 1}], %{state | rank: rank})
+  defp of({:fn, _, clauses}, %{level: level} = state) do
+    with {:ok, clauses, state} <- of_clauses(clauses, %{state | level: level + 1}) do
+      ok([{:fn, clauses, 1}], %{state | level: level})
     end
   end
 
@@ -390,11 +390,11 @@ defmodule Types.Checker do
   ### Var apply
 
   defp of_var_apply(var_ctx, var_counter, meta, [arg_types], arity, state) do
-    %{inferred: inferred, counter: counter, ranks: ranks, applies: applies} = state
-    {var_rank, var_deps} = Map.fetch!(ranks, var_counter)
+    %{inferred: inferred, counter: counter, levels: levels, applies: applies} = state
+    {var_level, var_deps} = Map.fetch!(levels, var_counter)
     var_applies = Map.get(applies, var_counter, [])
 
-    # We allow only a limited for of rank 2 intersections where
+    # We allow only a limited for of level 2 intersections where
     # type variables in one clause do not affect type variables
     # in other clauses. This means we need to carefully check the
     # argument types input considering that:
@@ -413,7 +413,7 @@ defmodule Types.Checker do
     #
     #   3. if there is no recursion, then we are good to go.
     #
-    case of_var_apply_recur([arg_types], var_counter, var_applies, var_rank, ranks) do
+    case of_var_apply_recur([arg_types], var_counter, var_applies, var_level, levels) do
       {{:occurs, counter}, _move_up} ->
         error(meta, {:occurs, [{:var, var_ctx, var_counter}], counter, arg_types, arity})
       {:self, _move_up} ->
@@ -445,36 +445,36 @@ defmodule Types.Checker do
             applies =
               Map.put(applies, var_counter, [counter | var_applies])
 
-            ranks =
+            levels =
               move_up
-              |> Enum.reduce(ranks, fn up_counter, ranks ->
-                Map.update!(ranks, up_counter, fn {_, deps} -> {var_rank, deps} end)
+              |> Enum.reduce(levels, fn up_counter, levels ->
+                Map.update!(levels, up_counter, fn {_, deps} -> {var_level, deps} end)
               end)
-              |> Map.put(var_counter, {var_rank, [counter | move_up] ++ var_deps})
-              |> Map.put(counter, {var_rank, []})
+              |> Map.put(var_counter, {var_level, [counter | move_up] ++ var_deps})
+              |> Map.put(counter, {var_level, []})
 
             ok(return, %{state | inferred: inferred, counter: counter + 1,
-                                 applies: applies, ranks: ranks})
+                                 applies: applies, levels: levels})
         end
     end
   end
 
-  defp of_var_apply_recur(types, var_counter, var_applies, var_rank, ranks) do
+  defp of_var_apply_recur(types, var_counter, var_applies, var_level, levels) do
     Union.traverse_args(types, {[], []}, fn
-      {:var, _, ^var_counter}, {_, acc_ranks} ->
-        {:ok, {:self, acc_ranks}}
-      {:var, _, counter}, {acc_applies, acc_ranks} when is_list(acc_applies) ->
+      {:var, _, ^var_counter}, {_, acc_levels} ->
+        {:ok, {:self, acc_levels}}
+      {:var, _, counter}, {acc_applies, acc_levels} when is_list(acc_applies) ->
         if counter in var_applies do
-          {:ok, {[counter | acc_applies], acc_ranks}}
+          {:ok, {[counter | acc_applies], acc_levels}}
         else
-          {rank, deps} = Map.fetch!(ranks, counter)
+          {level, deps} = Map.fetch!(levels, counter)
           cond do
             var_counter in deps ->
-              {:ok, {{:occurs, counter}, acc_ranks}}
-            rank > var_rank ->
-              {:ok, {acc_applies, [counter | acc_ranks]}}
+              {:ok, {{:occurs, counter}, acc_levels}}
+            level > var_level ->
+              {:ok, {acc_applies, [counter | acc_levels]}}
             true ->
-              {:ok, {acc_applies, acc_ranks}}
+              {:ok, {acc_applies, acc_levels}}
           end
         end
       _type, acc ->
@@ -639,26 +639,26 @@ defmodule Types.Checker do
     with {:ok, arg, %{match: match, vars: vars} = acc_state} <- of_pattern(arg, acc_state),
          acc_state = %{acc_state | vars: Map.merge(vars, match)},
          {:ok, body, acc_state} <- of(body, acc_state) do
-      %{inferred: inferred, ranks: ranks, rank: rank} = acc_state
+      %{inferred: inferred, levels: levels, level: level} = acc_state
       acc_state = replace_vars(acc_state, state)
 
       # Get all variables introduced in the function head,
       # including the ones that may have come as part of
       # applies.
       #
-      # Then we check they belong to the current rank and
+      # Then we check they belong to the current level and
       # make sure they are either free or are a supertype.
       clause_counters =
         for {_, [{:var, _, key}]} <- match,
-            counter <- of_clauses_deps([key], rank, ranks),
+            counter <- of_clauses_deps([key], level, levels),
             value = Map.get(inferred, counter, []),
             Union.supertype?(value),
             do: counter
 
       # We will expand everything that is not in the clause
-      # counters and belong to the current rank.
+      # counters and belong to the current level.
       expand = Map.drop(inferred, clause_counters)
-      {body, unused_counters} = bind(body, clause_counters, expand, rank, ranks)
+      {body, unused_counters} = bind(body, clause_counters, expand, level, levels)
 
       # If there is a clause variable that was not used in the body,
       # and it is not free, we shall expand it.
@@ -671,7 +671,7 @@ defmodule Types.Checker do
         end)
 
       # Go through all arguments and expand what we are not keeping.
-      {head, _} = bind_args([arg], [], expand, rank, ranks)
+      {head, _} = bind_args([arg], [], expand, level, levels)
 
       # Remove the unused counters.
       clause_counters = clause_counters -- unused_counters
@@ -679,7 +679,7 @@ defmodule Types.Checker do
       # And build both clause_inferred and acc_inferred.
       clause_inferred =
         for counter <- clause_counters,
-            {value, _} = bind(Map.get(inferred, counter, []), [], expand, rank, ranks),
+            {value, _} = bind(Map.get(inferred, counter, []), [], expand, level, levels),
             do: {counter, value},
             into: %{}
 
@@ -691,13 +691,13 @@ defmodule Types.Checker do
     {:ok, :lists.reverse(acc_clauses), acc_state}
   end
 
-  defp of_clauses_deps([key | keys], rank, ranks) do
-    case Map.fetch!(ranks, key) do
-      {^rank, deps} -> [key | of_clauses_deps(deps ++ keys, rank, ranks)]
-      {_, _} -> of_clauses_deps(keys, rank, ranks)
+  defp of_clauses_deps([key | keys], level, levels) do
+    case Map.fetch!(levels, key) do
+      {^level, deps} -> [key | of_clauses_deps(deps ++ keys, level, levels)]
+      {_, _} -> of_clauses_deps(keys, level, levels)
     end
   end
-  defp of_clauses_deps([], _rank, _ranks) do
+  defp of_clauses_deps([], _level, _levels) do
     []
   end
 
@@ -792,13 +792,13 @@ defmodule Types.Checker do
   end
 
   defp of_pattern_bind_var(match, var_ctx, types, state) do
-    %{counter: counter, inferred: inferred, rank: rank, ranks: ranks} = state
+    %{counter: counter, inferred: inferred, level: level, levels: levels} = state
     inferred = Map.put(inferred, counter, types)
     return = [{:var, var_ctx, counter}]
     match = Map.put(match, var_ctx, return)
-    ranks = Map.put(ranks, counter, {rank, []})
+    levels = Map.put(levels, counter, {level, []})
     ok(return, %{state | match: match, counter: counter + 1,
-                         inferred: inferred, ranks: ranks})
+                         inferred: inferred, levels: levels})
   end
 
   ## Helpers
@@ -853,14 +853,14 @@ defmodule Types.Checker do
   ## State helpers
 
   # :counter keeps the variable counter (de brujin indexes)
-  # :rank keeps the function rank
+  # :level keeps the function level
   # The :match map keeps all Elixir variables defined in a match
   # The :vars map keeps all Elixir variables and their types
   # The :inferred map keeps track of all inferred types
   # The :applies map keeps all variables that were introduced by applying on a var
-  # The :ranks map keeps the variable rank as well as all rank variables
-  @state %{counter: 0, rank: 0, match: %{}, vars: %{},
-           inferred: %{}, applies: %{}, ranks: %{}}
+  # The :levels map keeps the variable level as well as all related level variables
+  @state %{counter: 0, level: 0, match: %{}, vars: %{},
+           inferred: %{}, applies: %{}, levels: %{}}
 
   defp state do
     @state
