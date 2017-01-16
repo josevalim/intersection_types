@@ -84,7 +84,7 @@ defmodule Types.Checker do
     end
   end
   defp unify(_left, [], keep, vars, type_vars, acc_vars, lefties, righties, unmatched) do
-    vars = Map.merge(vars, Map.take(type_vars, keep))
+    vars = Map.merge(vars, Map.take(type_vars, Map.keys(keep)))
     unify(lefties, righties, keep, vars, type_vars, acc_vars, unmatched)
   end
 
@@ -117,7 +117,7 @@ defmodule Types.Checker do
     {:match, type_vars, acc_vars}
   end
 
-  defp unify_each({:var, _, key1}, {:var, _, key2} = right, keep, vars, type_vars, acc_vars) do
+  defp unify_each({:var, _, key1}, {:var, _, key2} = right, _keep, vars, type_vars, acc_vars) do
     case {Map.get(vars, key1, []), Map.get(vars, key2, [])} do
       {[], _} ->
         type_vars =
@@ -127,6 +127,9 @@ defmodule Types.Checker do
           acc_vars
           |> Map.put(key2, Map.get(type_vars, key2, []))
           |> Map.update(key1, [right], &Union.union(&1, [right]))
+        {:match, type_vars, acc_vars}
+      # TODO: This needs to become an occurs check.
+      {[{:var, _, ^key2}], []} ->
         {:match, type_vars, acc_vars}
       {left_value, []} ->
         type_vars =
@@ -138,21 +141,6 @@ defmodule Types.Checker do
           |> Map.update(key2, left_value, &Union.union(&1, left_value))
           |> Map.update(key1, [right], &Union.union(&1 -- left_value, [right]))
         {:match, type_vars, acc_vars}
-      {left_value, right_value} ->
-        with {_, [_ | _] = match, type_vars, acc_vars} <-
-               unify(left_value, right_value, keep, vars, type_vars, acc_vars) do
-          type_vars =
-            type_vars
-            |> Map.update(key1, match, &Union.union(&1 -- left_value, match))
-            |> Map.update(key2, match, &Union.union(&1 -- right_value, match))
-          acc_vars =
-            acc_vars
-            |> Map.update(key1, match, &Union.union(&1 -- left_value, match))
-            |> Map.update(key2, match, &Union.union(&1 -- right_value, match))
-          {:match, type_vars, acc_vars}
-        else
-          _ -> :disjoint
-        end
     end
   end
 
@@ -214,7 +202,6 @@ defmodule Types.Checker do
 
   defp unify_fn([{left_head, left_body, left_inferred} | lefties], righties,
                 keep, vars, type_vars, acc_vars) do
-
     case unify_fn(left_head, left_body, left_inferred, righties, keep, vars, type_vars, acc_vars, false) do
       {type_vars, acc_vars} ->
         unify_fn(lefties, righties, keep, type_vars, type_vars, acc_vars)
@@ -229,9 +216,9 @@ defmodule Types.Checker do
   defp unify_fn(left_head, left_body, left_inferred,
                 [{right_head, right_body, right_inferred} | clauses],
                 keep, vars, type_vars, acc_vars, matched?) do
-    merged = Map.merge(left_inferred, right_inferred)
-    vars = vars |> Map.merge(merged) |> Map.drop(keep)
-    type_vars = type_vars |> Map.merge(merged) |> Map.drop(keep)
+    keep = keep |> Map.merge(left_inferred) |> Map.merge(right_inferred)
+    vars = Map.merge(vars, keep)
+    type_vars = Map.merge(type_vars, keep)
 
     with {:match, _, type_vars, acc_vars} <-
            unify_args(left_head, right_head, keep, vars, type_vars, acc_vars),
@@ -505,7 +492,7 @@ defmodule Types.Checker do
                                 funs, args, recur, inferred, sum, acc_inferred) do
     with true <- var_recur in recur,
          {:match, _, _, acc_inferred} <-
-           unify_args(args, head, [], inferred, inferred, acc_inferred) do
+           unify_args(args, head, %{}, inferred, inferred, acc_inferred) do
       of_var_apply_unify_recur(clauses, funs, args, recur, inferred, Union.union(body, sum), acc_inferred)
     else
       _ -> of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
@@ -567,7 +554,7 @@ defmodule Types.Checker do
     acc_inferred = Map.merge(acc_inferred, vars)
 
     with {_, [_ | _] = matched, _, acc_inferred} <-
-           unify(head, arg, Map.keys(vars), inferred, acc_inferred) do
+           unify(head, arg, vars, inferred, acc_inferred) do
       acc_body = Union.union(acc_body, body)
       of_fn_apply_each(clauses, arg, inferred, acc_arg -- matched, acc_inferred, acc_body)
     else
@@ -602,9 +589,7 @@ defmodule Types.Checker do
   #
   # And the function must return {:ok, :error}.
   defp of_match(left, right, inferred, vars, match) do
-    keep = for {_, {:var, _, counter}} <- match, do: {counter, []}, into: %{}
-
-    with {:match, _, _, match_inferred} <- unify(left, right, keep, inferred, inferred) do
+    with {:match, _, _, match_inferred} <- unify(left, right, %{}, inferred, inferred) do
       {vars, inferred} = of_match_vars(Map.to_list(match), vars, match_inferred)
       {:ok, vars, inferred, right}
     else

@@ -65,17 +65,17 @@ defmodule Types.CheckerTest do
 
   describe "unify/5" do
     test "unions" do
-      assert Checker.unify([{:var, {:x, Elixir}, 0}], [:atom, :integer], [], %{}, %{}) ==
+      assert Checker.unify([{:var, {:x, Elixir}, 0}], [:atom, :integer], %{}, %{}, %{}) ==
              {:match, [:atom, :integer], %{0 => [:atom, :integer]}, %{0 => [:atom, :integer]}}
 
-      assert Checker.unify([:atom, :integer], [{:var, {:x, Elixir}, 0}], [], %{}, %{}) ==
+      assert Checker.unify([:atom, :integer], [{:var, {:x, Elixir}, 0}], %{}, %{}, %{}) ==
              {:match, [{:var, {:x, Elixir}, 0}], %{0 => [:atom, :integer]}, %{0 => [:atom, :integer]}}
     end
 
     test "tuple root unions" do
       assert Checker.unify([{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
                            [{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
-                           [], %{}, %{}) ==
+                           %{}, %{}, %{}) ==
              {:match,
               [{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
               %{0 => [:atom, :integer]},
@@ -83,7 +83,7 @@ defmodule Types.CheckerTest do
 
       assert Checker.unify([{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
                            [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
-                           [], %{}, %{}) ==
+                           %{}, %{}, %{}) ==
              {:match,
               [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
               %{0 => [:atom, :integer]},
@@ -93,7 +93,7 @@ defmodule Types.CheckerTest do
     test "tuple args unions" do
       assert Checker.unify([{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
                            [{:tuple, [[:atom, :integer]], 1}],
-                           [], %{}, %{}) ==
+                           %{}, %{}, %{}) ==
              {:match,
               [{:tuple, [[:atom, :integer]], 1}],
               %{0 => [:atom, :integer]},
@@ -101,7 +101,7 @@ defmodule Types.CheckerTest do
 
       assert Checker.unify([{:tuple, [[:atom, :integer]], 1}],
                            [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
-                           [], %{}, %{}) ==
+                           %{}, %{}, %{}) ==
              {:match,
               [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
               %{0 => [:atom, :integer]},
@@ -116,18 +116,38 @@ defmodule Types.CheckerTest do
       left  = {:tuple, [[{:value, :left}], [:atom]], 2}
       right = {:tuple, [[{:value, :right}], [:integer]], 2}
 
-      assert Checker.unify(pattern, [left, right], [0, 1], %{}, %{}) ==
-             {:match, [left, right], %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
+      assert Checker.unify(pattern, [left, right], %{0 => [], 1 => []}, %{}, %{}) ==
+             {:match, [left, right],
+              %{0 => [:atom], 1 => [:integer]},
+              %{0 => [:atom], 1 => [:integer]}}
 
-      assert Checker.unify(pattern, [left, right, :atom], [0, 1], %{}, %{}) ==
-             {:disjoint, [left, right], %{0 => [:atom], 1 => [:integer]}, %{0 => [:atom], 1 => [:integer]}}
+      assert Checker.unify(pattern, [left, right, :atom], %{0 => [], 1 => []}, %{}, %{}) ==
+             {:disjoint, [left, right],
+              %{0 => [:atom], 1 => [:integer]},
+              %{0 => [:atom], 1 => [:integer]}}
 
       # This pattern requires the same type across left and right.
       pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
                  {:tuple, [[{:value, :right}], [{:var, {:x, nil}, 0}]], 2}]
 
-      assert Checker.unify(pattern, [left, right], [0, 1], %{}, %{}) ==
+      assert Checker.unify(pattern, [left, right], %{0 => [], 1 => []}, %{}, %{}) ==
              {:disjoint, [left], %{0 => [:atom]}, %{0 => [:atom]}}
+    end
+
+    test "functions with shared body type variables" do
+      fn1 = [{:fn, [{[[:atom]], [{:var, {:x, nil}, 0}], %{}},
+                    {[[:integer]], [{:var, {:x, nil}, 0}], %{}}], 1}]
+      fn2 = [{:fn, [{[[:atom]], [:atom], %{}},
+                    {[[:integer]], [:integer], %{}}], 1}]
+      assert {:disjoint, _, _, _} = Checker.unify(fn1, fn2, %{}, %{}, %{})
+      assert {:disjoint, _, _, _} = Checker.unify(fn2, fn1, %{}, %{}, %{})
+
+      fn1 = [{:fn, [{[[:atom]], [{:var, {:x, nil}, 0}], %{0 => []}},
+                    {[[:integer]], [{:var, {:x, nil}, 0}], %{0 => []}}], 1}]
+      fn2 = [{:fn, [{[[:atom]], [:atom], %{}},
+                    {[[:integer]], [:integer], %{}}], 1}]
+      assert {:match, _, _, %{0 => [:atom, :integer]}} = Checker.unify(fn1, fn2, %{}, %{}, %{})
+      assert {:match, _, _, %{0 => [:atom, :integer]}} = Checker.unify(fn2, fn1, %{}, %{}, %{})
     end
   end
 
@@ -155,6 +175,9 @@ defmodule Types.CheckerTest do
       assert quoted_of((y = fn x -> x end; {y, y})) |> format() ==
              "{(a -> a), (b -> b)}"
 
+      assert quoted_of((y = fn x -> x end; fn z -> fn w -> {y, y} end end)) |> format() ==
+             "(a -> (b -> {(c -> c), (d -> d)}))"
+
       assert quoted_of((z = fn x -> fn y -> y end end; {z, z})) |> format() ==
              "{(a -> (b -> b)), (c -> (d -> d))}"
 
@@ -164,17 +187,26 @@ defmodule Types.CheckerTest do
       assert quoted_of((w = (fn x -> z = fn y -> y end; {z, z} end); {w, w})) |> format() ==
              "{(a -> {(b -> b), (c -> c)}), (d -> {(e -> e), (f -> f)})}"
 
+      assert quoted_of(fn x -> y = (fn z -> z end).(x); {y, y} end) |> format() ==
+             "(a -> {a, a})"
+
+      assert quoted_of(fn x -> y = fn z -> x.(z) end; {y, y} end) |> format() ==
+             "((a -> b) -> {(a -> b), (a -> b)})"
+
+      assert quoted_of((y = (fn x -> fn z -> x.(z) end end).(fn w -> w end); {y, y})) |> format() ==
+             "{(a -> a), (b -> b)}"
+
       assert quoted_of((y = fn x -> fn y -> x.(x.(y)) end end; {y, y})) |> format() ==
              "{((a -> a) -> (a -> a)), ((b -> b) -> (b -> b))}"
+
+      assert quoted_of((y = (fn x -> fn y -> x.(x.(y)) end end).(fn z -> z end); {y, y})) |> format() ==
+             "{(a -> a), (b -> b)}"
 
       assert quoted_of((w = fn x -> fn y -> fn z -> x.(y.(z)) end end end; {w, w})) |> format() ==
              "{((a -> b) -> ((c -> a) -> (c -> b))), ((d -> e) -> ((f -> d) -> (f -> e)))}"
 
       assert quoted_of(fn x -> y = x; y end) |> format() ==
              "(a -> a)"
-
-      assert quoted_of(fn x -> y = fn z -> x.(z) end; {y, y} end) |> format() ==
-             "((a -> b) -> {(a -> b), (a -> b)})"
 
       assert quoted_of(fn x -> z = fn y -> {x, y} end; {z, z} end) |> format() ==
              "(a -> {(b -> {a, b}), (c -> {a, c})})"
