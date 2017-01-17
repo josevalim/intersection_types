@@ -282,21 +282,19 @@ defmodule Types.Checker do
   defp bind_level(types, counters, vars, level, levels) do
     Union.traverse(types, counters, fn
       {:var, _, counter}, counters ->
-        {current_level, _} = Map.get(levels, counter, {level, []})
+        case Map.fetch(levels, counter) do
+          {:ok, {var_level, _, _}} when var_level < level ->
+            {:ok, counters}
+          _ ->
+            counters = List.delete(counters, counter)
 
-        if current_level >= level do
-          counters = List.delete(counters, counter)
-
-          case Map.get(vars, counter, []) do
-            [_ | _] = existing ->
-              {:union, existing, counters}
-            _ ->
-              {:ok, counters}
-          end
-        else
-          {:ok, counters}
+            case Map.get(vars, counter, []) do
+              [_ | _] = existing ->
+                {:union, existing, counters}
+              _ ->
+                {:ok, counters}
+            end
         end
-
       _, counters ->
         {:ok, counters}
     end)
@@ -380,9 +378,8 @@ defmodule Types.Checker do
   ### Var apply
 
   defp of_var_apply(var_ctx, var_counter, meta, [arg_types], arity, state) do
-    %{inferred: inferred, counter: counter, levels: levels, applies: applies} = state
-    {var_level, var_deps} = Map.fetch!(levels, var_counter)
-    var_applies = Map.get(applies, var_counter, [])
+    %{inferred: inferred, counter: counter, levels: levels} = state
+    {var_level, var_applies, var_deps} = Map.fetch!(levels, var_counter)
 
     # We allow only a limited for of level 2 intersections where
     # type variables in one clause do not affect type variables
@@ -427,24 +424,27 @@ defmodule Types.Checker do
                 {:fn, of_var_apply_clauses(clauses, [arg_types], return), arity}
               end
 
+            levels =
+              Enum.reduce(move_up, levels, fn up_counter, levels ->
+                Map.update!(levels, up_counter, fn {_, applies, deps} ->
+                  {var_level, applies, deps}
+                end)
+              end)
+
             inferred =
               inferred
               |> Map.put(counter, [])
               |> Map.put(var_counter, types)
 
-            applies =
-              Map.put(applies, var_counter, [counter | var_applies])
+            var_applies = [counter | var_applies]
+            var_deps = [counter | move_up] ++ var_deps
 
             levels =
-              move_up
-              |> Enum.reduce(levels, fn up_counter, levels ->
-                Map.update!(levels, up_counter, fn {_, deps} -> {var_level, deps} end)
-              end)
-              |> Map.put(var_counter, {var_level, [counter | move_up] ++ var_deps})
-              |> Map.put(counter, {var_level, []})
+              levels
+              |> Map.put(var_counter, {var_level, var_applies, var_deps})
+              |> Map.put(counter, {var_level, [], []})
 
-            ok(return, %{state | inferred: inferred, counter: counter + 1,
-                                 applies: applies, levels: levels})
+            ok(return, %{state | inferred: inferred, counter: counter + 1, levels: levels})
         end
     end
   end
@@ -457,7 +457,7 @@ defmodule Types.Checker do
         if counter in var_applies do
           {:ok, {[counter | acc_applies], acc_levels}}
         else
-          {level, deps} = Map.fetch!(levels, counter)
+          {level, _applies, deps} = Map.fetch!(levels, counter)
           cond do
             var_counter in deps ->
               {:ok, {{:occurs, counter}, acc_levels}}
@@ -680,12 +680,12 @@ defmodule Types.Checker do
 
   defp of_clauses_deps([key | keys], inferred, level, levels, acc) do
     case Map.fetch!(levels, key) do
-      {^level, deps} ->
+      {^level, _applies, deps} ->
         value = Map.get(inferred, key, [])
         acc = if Union.supertype?(value), do: [key | acc], else: acc
         acc = of_clauses_deps(deps, inferred, level, levels, acc)
         of_clauses_deps(keys, inferred, level, levels, acc)
-      {_, _} ->
+      {_, _, _} ->
         of_clauses_deps(keys, inferred, level, levels, acc)
     end
   end
@@ -729,7 +729,7 @@ defmodule Types.Checker do
   defp of_var_rewrite({:var, _, key} = var, state) do
     %{counter: counter, inferred: inferred, levels: levels, level: level} = state
     case Map.get(levels, key) do
-      {key_level, _} when key_level <= level ->
+      {key_level, _, _} when key_level <= level ->
         {:ok, state}
       _ ->
         case of_var_rewrite_free([var], counter, inferred) do
@@ -794,13 +794,12 @@ defmodule Types.Checker do
   end
 
   defp of_pattern_bind_var(match, var_ctx, types, state) do
-    %{counter: counter, inferred: inferred, level: level, levels: levels, counters: counters} = state
+    %{counter: counter, inferred: inferred, level: level, levels: levels} = state
     inferred = Map.put(inferred, counter, types)
     return = [{:var, var_ctx, counter}]
     match = Map.put(match, var_ctx, {level, return})
-    levels = Map.put(levels, counter, {level, []})
-    ok(return, %{state | match: match, counter: counter + 1, counters: Map.put(counters, var_ctx, counter),
-                         inferred: inferred, levels: levels})
+    levels = Map.put(levels, counter, {level, [], []})
+    ok(return, %{state | match: match, counter: counter + 1, inferred: inferred, levels: levels})
   end
 
   ## Helpers
@@ -859,10 +858,8 @@ defmodule Types.Checker do
   # The :match map keeps all Elixir variables defined in a match
   # The :vars map keeps all Elixir variables and their types
   # The :inferred map keeps track of all inferred types
-  # The :applies map keeps all variables that were introduced by applying on a var
   # The :levels map keeps the variable level as well as all related level variables
-  @state %{counter: 0, level: 0, match: %{}, vars: %{},
-           inferred: %{}, applies: %{}, levels: %{}, counters: %{}}
+  @state %{counter: 0, level: 0, match: %{}, vars: %{}, inferred: %{}, levels: %{}}
 
   defp state do
     @state
