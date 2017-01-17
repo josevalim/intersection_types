@@ -5,14 +5,12 @@ defmodule Types.CheckerTest do
 
   defp types({:ok, types, %{inferred: inferred}}) do
     types
-    |> Checker.bind(inferred)
-    |> elem(0)
+    |> Checker.bind(inferred, inferred)
   end
 
   defp format({:ok, types, %{inferred: inferred}}) do
     types
-    |> Checker.bind(inferred)
-    |> elem(0)
+    |> Checker.bind(inferred, inferred)
     |> Union.to_iodata()
     |> IO.iodata_to_binary()
   end
@@ -172,7 +170,7 @@ defmodule Types.CheckerTest do
       assert quoted_of((y = fn x -> x end; y.(y))) |> format() ==
              "(a -> a)"
 
-      assert quoted_of((y = fn x -> x end; {y, y})) |> format() ==
+      assert quoted_of((y = fn x -> x end; z = y; {z, z})) |> format() ==
              "{(a -> a), (b -> b)}"
 
       assert quoted_of((y = fn x -> x end; fn z -> fn w -> {y, y} end end)) |> format() ==
@@ -400,6 +398,11 @@ defmodule Types.CheckerTest do
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                        (fn :foo -> :foo; :bar -> :bar; :no -> :match end)) |> format() ==
              "(:bar | :foo -> :bar | :foo)"
+
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn z -> z end).
+                       (fn :foo -> :foo; :bar -> :bar end)) |> format() ==
+             "(:foo -> :foo; :bar -> :bar)"
 
       # (((b -> b) -> a) -> a) matches
       assert quoted_of((fn x -> x.(fn y -> y end) end).
@@ -721,6 +724,10 @@ defmodule Types.CheckerTest do
                      [{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:x, nil}, 4}], %{}}], 1}],
                      %{2 => []}}], 1}],
                  %{3 => [], 4 => []}}], 1}]
+
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn :foo -> :foo; :bar -> :bar end)) |> elem(1) ==
+             [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], %{}}], 1}]
     end
   end
 end

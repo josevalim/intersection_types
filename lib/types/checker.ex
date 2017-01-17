@@ -222,8 +222,7 @@ defmodule Types.Checker do
 
     with {:match, _, type_vars, acc_vars} <-
            unify_args(left_head, right_head, keep, vars, type_vars, acc_vars),
-         {right_body, _} =
-           bind(right_body, Map.take(type_vars, Map.keys(right_inferred))),
+         right_body = bind(right_body, right_inferred, type_vars),
          {:match, _, type_vars, acc_vars} <-
            unify(left_body, right_body, keep, type_vars, type_vars, acc_vars) do
       unify_fn(left_head, left_body, left_inferred, clauses, keep, vars, type_vars, acc_vars, true)
@@ -259,21 +258,31 @@ defmodule Types.Checker do
 
   @doc """
   Binds the variables to their types.
-
-  It binds only variables with level equal to or
-  greater than the current level.
-
-  It returns all variables that belong exactly
-  to the current level that have been bound.
   """
-  def bind(types, vars) do
-    bind(types, [], vars, 0, %{})
+  def bind(types, only, vars) do
+    Union.traverse(types, :ok, fn
+      {:var, _, counter}, acc ->
+        case only do
+          %{^counter => _} ->
+            case Map.get(vars, counter, []) do
+              [_ | _] = existing ->
+                {:union, existing, acc}
+              _ ->
+                {:ok, acc}
+            end
+          %{} ->
+            {:ok, acc}
+        end
+      _, acc ->
+        {:ok, acc}
+    end) |> elem(0)
   end
 
-  def bind(types, counters, vars, level, levels) do
+  # Similar to bind but checks exclusively for current levels.
+  defp bind_level(types, counters, vars, level, levels) do
     Union.traverse(types, counters, fn
       {:var, _, counter}, counters ->
-        {current_level, _} = Map.get(levels, counter, {0, []})
+        {current_level, _} = Map.get(levels, counter, {level, []})
 
         if current_level >= level do
           counters = List.delete(counters, counter)
@@ -293,8 +302,8 @@ defmodule Types.Checker do
     end)
   end
 
-  defp bind_args(args, counters, vars, level, levels) do
-    Enum.map_reduce(args, counters, &bind(&1, &2, vars, level, levels))
+  defp bind_level_args(args, counters, vars, level, levels) do
+    Enum.map_reduce(args, counters, &bind_level(&1, &2, vars, level, levels))
   end
 
   @doc """
@@ -304,12 +313,12 @@ defmodule Types.Checker do
     of(expr, state())
   end
 
-  defp of({var, meta, ctx}, %{counter: counter, vars: vars} = state)
-       when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
+  defp of({var, meta, ctx}, state) when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
+    %{vars: vars, level: level} = state
     case Map.fetch(vars, {var, ctx}) do
-      {:ok, types} ->
-        {types, counter} = Union.traverse(types, counter, &of_var/2)
-        ok(types, %{state | counter: counter})
+      {:ok, {var_level, var_types}} ->
+        {types, state} = Union.traverse(var_types, %{state | level: var_level}, &of_var/2)
+        ok(types, %{state | level: level})
       :error ->
         error(meta, {:unbound_var, var, ctx})
     end
@@ -329,9 +338,9 @@ defmodule Types.Checker do
     with {:ok, right, right_state} <- of(right, state),
          {:ok, left, left_state} <- of_pattern(left, replace_vars(right_state, state)) do
       state = lift_vars(left_state, right_state)
-      %{inferred: inferred, vars: vars, match: match} = state
+      %{match: match, vars: vars, inferred: inferred} = state
 
-      case of_match(left, right, inferred, vars, match) do
+      case of_match(left, right, match, vars, inferred) do
         {:ok, acc_vars, acc_inferred, acc_body} ->
           ok(acc_body, %{state | inferred: acc_inferred, vars: acc_vars})
         :error ->
@@ -588,7 +597,7 @@ defmodule Types.Checker do
   #     z is :ok
   #
   # And the function must return {:ok, :error}.
-  defp of_match(left, right, inferred, vars, match) do
+  defp of_match(left, right, match, vars, inferred) do
     with {:match, _, _, match_inferred} <- unify(left, right, %{}, inferred, inferred) do
       {vars, inferred} = of_match_vars(Map.to_list(match), vars, match_inferred)
       {:ok, vars, inferred, right}
@@ -597,9 +606,9 @@ defmodule Types.Checker do
     end
   end
 
-  defp of_match_vars([{var_ctx, [{_, _, counter}]} | matches], vars, inferred) do
+  defp of_match_vars([{var_ctx, {level, [{_, _, counter}]}} | matches], vars, inferred) do
     of_match_vars(matches,
-                  Map.put(vars, var_ctx, Map.fetch!(inferred, counter)),
+                  Map.put(vars, var_ctx, {level, Map.fetch!(inferred, counter)}),
                   Map.delete(inferred, counter))
   end
   defp of_match_vars([], vars, inferred) do
@@ -627,17 +636,16 @@ defmodule Types.Checker do
       #
       # Then we check they belong to the current level and
       # make sure they are either free or are a supertype.
+      match_counters =
+        for {_, {_, [{:var, _, counter}]}} <- match, do: counter
+
       clause_counters =
-        for {_, [{:var, _, key}]} <- match,
-            counter <- of_clauses_deps([key], level, levels),
-            value = Map.get(inferred, counter, []),
-            Union.supertype?(value),
-            do: counter
+        of_clauses_deps(match_counters, inferred, level, levels, [])
 
       # We will expand everything that is not in the clause
       # counters and belong to the current level.
       expand = Map.drop(inferred, clause_counters)
-      {body, unused_counters} = bind(body, clause_counters, expand, level, levels)
+      {body, unused_counters} = bind_level(body, clause_counters, expand, level, levels)
 
       # If there is a clause variable that was not used in the body,
       # and it is not free, we shall expand it.
@@ -650,7 +658,7 @@ defmodule Types.Checker do
         end)
 
       # Go through all arguments and expand what we are not keeping.
-      {head, _} = bind_args([arg], [], expand, level, levels)
+      {head, _} = bind_level_args([arg], [], expand, level, levels)
 
       # Remove the unused counters.
       clause_counters = clause_counters -- unused_counters
@@ -658,7 +666,7 @@ defmodule Types.Checker do
       # And build both clause_inferred and acc_inferred.
       clause_inferred =
         for counter <- clause_counters,
-            {value, _} = bind(Map.get(inferred, counter, []), [], expand, level, levels),
+            {value, _} = bind_level(Map.get(inferred, counter, []), [], expand, level, levels),
             do: {counter, value},
             into: %{}
 
@@ -670,14 +678,19 @@ defmodule Types.Checker do
     {:ok, :lists.reverse(acc_clauses), acc_state}
   end
 
-  defp of_clauses_deps([key | keys], level, levels) do
+  defp of_clauses_deps([key | keys], inferred, level, levels, acc) do
     case Map.fetch!(levels, key) do
-      {^level, deps} -> [key | of_clauses_deps(deps ++ keys, level, levels)]
-      {_, _} -> of_clauses_deps(keys, level, levels)
+      {^level, deps} ->
+        value = Map.get(inferred, key, [])
+        acc = if Union.supertype?(value), do: [key | acc], else: acc
+        acc = of_clauses_deps(deps, inferred, level, levels, acc)
+        of_clauses_deps(keys, inferred, level, levels, acc)
+      {_, _} ->
+        of_clauses_deps(keys, inferred, level, levels, acc)
     end
   end
-  defp of_clauses_deps([], _level, _levels) do
-    []
+  defp of_clauses_deps([], _inferred, _level, _levels, acc) do
+    acc
   end
 
   ## Blocks
@@ -694,39 +707,49 @@ defmodule Types.Checker do
 
   ## Vars
 
-  defp of_var({:fn, clauses, arity}, counter) do
-    {:replace, rewrite, _} =
-      of_var_rewrite({:fn, clauses, arity}, {counter, %{}})
-    {:replace, rewrite, counter + 1}
+  defp of_var({:fn, clauses, arity}, %{counter: counter} = state) do
+    {:replace, rewrite, _} = of_var_rewrite({:fn, clauses, arity}, state)
+    {:replace, rewrite, %{state | counter: counter + 1}}
   end
   defp of_var(_type, acc) do
     {:ok, acc}
   end
 
-  defp of_var_rewrite({:fn, clauses, arity}, {counter, rewrite} = info) do
+  defp of_var_rewrite({:fn, clauses, arity}, %{counter: counter} = state) do
     clauses =
-      for {head, body, inferred} <- clauses do
-        info = {counter, Map.merge(rewrite, inferred)}
-
-        {head, _} = Union.traverse_args(head, info, &of_var_rewrite/2)
-        {body, _} = Union.traverse(body, info, &of_var_rewrite/2)
-        inferred = for {k, v} <- inferred, do: {[counter | k], v}, into: %{}
-
-        {head, body, inferred}
+      for {head, body, vars} <- clauses do
+        {head, _} = Union.traverse_args(head, state, &of_var_rewrite/2)
+        {body, _} = Union.traverse(body, state, &of_var_rewrite/2)
+        vars = for {k, v} <- vars, do: {[counter | k], v}, into: %{}
+        {head, body, vars}
       end
 
-    {:replace, {:fn, clauses, arity}, info}
+    {:replace, {:fn, clauses, arity}, state}
   end
-  defp of_var_rewrite({:var, ctx, key}, {counter, rewrite} = info) do
-    case rewrite do
-      %{^key => _} ->
-        {:replace, {:var, ctx, [counter | key]}, info}
-      %{} ->
-        {:ok, info}
+  defp of_var_rewrite({:var, _, key} = var, state) do
+    %{counter: counter, inferred: inferred, levels: levels, level: level} = state
+    case Map.get(levels, key) do
+      {key_level, _} when key_level <= level ->
+        {:ok, state}
+      _ ->
+        case of_var_rewrite_free([var], counter, inferred) do
+          {:ok, var} -> {:replace, var, state}
+          :error -> {:ok, state}
+        end
     end
   end
-  defp of_var_rewrite(_type, counter) do
-    {:ok, counter}
+  defp of_var_rewrite(_type, state) do
+    {:ok, state}
+  end
+
+  defp of_var_rewrite_free([{:var, ctx, key}], counter, inferred) do
+    case Map.get(inferred, key, []) do
+      [] -> {:ok, {:var, ctx, [counter | key]}}
+      other -> of_var_rewrite_free(other, counter, inferred)
+    end
+  end
+  defp of_var_rewrite_free(_, _counter, _inferred) do
+    :error
   end
 
   ## Patterns
@@ -753,14 +776,14 @@ defmodule Types.Checker do
 
   defp of_pattern_var(_meta, var_ctx, %{match: match} = state) do
     case Map.fetch(match, var_ctx) do
-      {:ok, type} -> ok(type, state)
+      {:ok, {_level, return}} -> ok(return, state)
       :error -> of_pattern_bind_var(match, var_ctx, [], state)
     end
   end
 
   defp of_pattern_bound_var(meta, var_ctx, types, %{match: match, inferred: inferred} = state) do
     case Map.fetch(match, var_ctx) do
-      {:ok, [{:var, _, counter}] = return} ->
+      {:ok, {_level, [{:var, _, counter}] = return}} ->
         case Map.fetch!(inferred, counter) do
           ^types -> ok(return, state)
           other -> error(meta, {:bound_var, var_ctx, other, types})
@@ -771,12 +794,12 @@ defmodule Types.Checker do
   end
 
   defp of_pattern_bind_var(match, var_ctx, types, state) do
-    %{counter: counter, inferred: inferred, level: level, levels: levels} = state
+    %{counter: counter, inferred: inferred, level: level, levels: levels, counters: counters} = state
     inferred = Map.put(inferred, counter, types)
     return = [{:var, var_ctx, counter}]
-    match = Map.put(match, var_ctx, return)
+    match = Map.put(match, var_ctx, {level, return})
     levels = Map.put(levels, counter, {level, []})
-    ok(return, %{state | match: match, counter: counter + 1,
+    ok(return, %{state | match: match, counter: counter + 1, counters: Map.put(counters, var_ctx, counter),
                          inferred: inferred, levels: levels})
   end
 
@@ -839,7 +862,7 @@ defmodule Types.Checker do
   # The :applies map keeps all variables that were introduced by applying on a var
   # The :levels map keeps the variable level as well as all related level variables
   @state %{counter: 0, level: 0, match: %{}, vars: %{},
-           inferred: %{}, applies: %{}, levels: %{}}
+           inferred: %{}, applies: %{}, levels: %{}, counters: %{}}
 
   defp state do
     @state
