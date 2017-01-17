@@ -91,7 +91,8 @@ defmodule Types do
 
     * On Understanding Types, Data Abstraction, and Polymorphism (Luca Cardelli)
 
-    * How OCaml type checker works (Oleg Kiselyo)
+    * How OCaml type checker works (Oleg Kiselyo) - a very accessible look
+      into generalization and possible optimizations.
 
   ### Intersection types
 

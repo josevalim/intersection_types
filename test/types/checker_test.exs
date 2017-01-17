@@ -400,6 +400,11 @@ defmodule Types.CheckerTest do
              "(:bar | :foo -> :bar | :foo)"
 
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                       (fn :foo -> :foo; :bar -> :bar end).
+                       (:foo)) |> format() ==
+             ":foo"
+
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                        (fn z -> z end).
                        (fn :foo -> :foo; :bar -> :bar end)) |> format() ==
              "(:foo -> :foo; :bar -> :bar)"
