@@ -3,11 +3,6 @@ defmodule Types.CheckerTest do
 
   alias Types.{Checker, Union}
 
-  defp types({:ok, types, %{inferred: inferred}}) do
-    types
-    |> Checker.bind(inferred, inferred)
-  end
-
   defp format({:ok, types, %{inferred: inferred}}) do
     types
     |> Checker.bind(inferred, inferred)
@@ -18,46 +13,6 @@ defmodule Types.CheckerTest do
   defmacro quoted_of(expr) do
     quote do
       Checker.of(unquote(Macro.escape(expr)))
-    end
-  end
-
-  defmacro quoted_ast_to_types(ast) do
-    quote do
-      Checker.ast_to_types(unquote(Macro.escape(ast)))
-    end
-  end
-
-  describe "ast_to_types/1" do
-    test "built-ins" do
-      assert quoted_ast_to_types(boolean()) |> types() ==
-             [{:value, true}, {:value, false}]
-    end
-
-    test "base types" do
-      assert quoted_ast_to_types(atom()) |> types() ==
-             [:atom]
-      assert quoted_ast_to_types(integer()) |> types() ==
-             [:integer]
-    end
-
-    test "values" do
-      assert quoted_ast_to_types(:foo) |> types() ==
-             [{:value, :foo}]
-      assert quoted_ast_to_types(true) |> types() ==
-             [{:value, true}]
-      assert quoted_ast_to_types(false) |> types() ==
-             [{:value, false}]
-    end
-
-    test "literals" do
-      assert quoted_ast_to_types(1) |> types() == [:integer]
-    end
-
-    test "tuples" do
-      assert quoted_ast_to_types({}) |> types() ==
-             [{:tuple, [], 0}]
-      assert quoted_ast_to_types({:ok, atom()}) |> types() ==
-             [{:tuple, [[{:value, :ok}], [:atom]], 2}]
     end
   end
 
@@ -108,11 +63,11 @@ defmodule Types.CheckerTest do
 
     test "either" do
       # This pattern accepts different types across left and right.
-      pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
-                 {:tuple, [[{:value, :right}], [{:var, {:y, nil}, 1}]], 2}]
+      pattern = [{:tuple, [[{:atom, :left}], [{:var, {:x, nil}, 0}]], 2},
+                 {:tuple, [[{:atom, :right}], [{:var, {:y, nil}, 1}]], 2}]
 
-      left  = {:tuple, [[{:value, :left}], [:atom]], 2}
-      right = {:tuple, [[{:value, :right}], [:integer]], 2}
+      left  = {:tuple, [[{:atom, :left}], [:atom]], 2}
+      right = {:tuple, [[{:atom, :right}], [:integer]], 2}
 
       assert Checker.unify(pattern, [left, right], %{0 => [], 1 => []}, %{}, %{}) ==
              {:match, [left, right],
@@ -125,8 +80,8 @@ defmodule Types.CheckerTest do
               %{0 => [:atom], 1 => [:integer]}}
 
       # This pattern requires the same type across left and right.
-      pattern = [{:tuple, [[{:value, :left}], [{:var, {:x, nil}, 0}]], 2},
-                 {:tuple, [[{:value, :right}], [{:var, {:x, nil}, 0}]], 2}]
+      pattern = [{:tuple, [[{:atom, :left}], [{:var, {:x, nil}, 0}]], 2},
+                 {:tuple, [[{:atom, :right}], [{:var, {:x, nil}, 0}]], 2}]
 
       assert Checker.unify(pattern, [left, right], %{0 => [], 1 => []}, %{}, %{}) ==
              {:disjoint, [left], %{0 => [:atom]}, %{0 => [:atom]}}

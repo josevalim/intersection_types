@@ -4,29 +4,6 @@ defmodule Types.Checker do
   alias Types.Union
 
   @doc """
-  Converts the given type AST to its inner type.
-  """
-  # TODO: Currently this is sharing code with of/2
-  # but I don't believe it should in the long term
-  # as they will likely end-up with different logic
-  # regarding how literals are parsed. When that
-  # happens, this should be moved to the union module.
-  def ast_to_types(ast, state \\ state())
-
-  def ast_to_types({:boolean, _, []}, state) do
-    ok([{:value, true}, {:value, false}], state)
-  end
-  def ast_to_types({:integer, _, []}, state) do
-    ok([:integer], state)
-  end
-  def ast_to_types({:atom, _, []}, state) do
-    ok([:atom], state)
-  end
-  def ast_to_types(other, state) do
-    literal(other, state, &ast_to_types/2)
-  end
-
-  @doc """
   Unifies the types on left and right.
 
   All of the types on the right must match at least one type
@@ -758,10 +735,13 @@ defmodule Types.Checker do
     of_pattern_each(ast, %{state | match: %{}})
   end
 
-  defp of_pattern_each({:::, meta, [{var, _, ctx}, type_ast]}, state)
+  defp of_pattern_each({:::, meta, [{var, _, ctx}, ast]}, state)
        when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
-    with {:ok, type, state} <- ast_to_types(type_ast, state) do
-      of_pattern_bound_var(meta, {var, ctx}, type, state)
+    case Union.ast_to_types(ast) do
+      {:ok, types} ->
+        of_pattern_bound_var(meta, {var, ctx}, types, state)
+      {:error, error} ->
+        error(meta, {:ast_to_type, error, ast})
     end
   end
   defp of_pattern_each({var, meta, ctx}, state) when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
@@ -809,7 +789,7 @@ defmodule Types.Checker do
   end
 
   defp literal(value, state, _fun) when is_atom(value) do
-    ok([{:value, value}], state)
+    ok([{:atom, value}], state)
   end
   defp literal({left, right}, state, fun) do
     with {:ok, args, arity, state} <- args([left, right], state, fun) do

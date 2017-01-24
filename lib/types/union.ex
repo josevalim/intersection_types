@@ -8,7 +8,7 @@ defmodule Types.Union do
   #
   # The types that compose the union:
   #
-  #   {:value, val}
+  #   {:atom, val}
   #   {:fn, [{head, body, inferred}], arity}
   #   {:tuple, [arg], arity}
   #   {:var, var_ctx, var_key}
@@ -71,7 +71,7 @@ defmodule Types.Union do
     {A.group(A.fold_doc(types, &A.glue(A.concat(&1, " |"), &2))), state}
   end
 
-  defp type_to_algebra({:value, val}, state) do
+  defp type_to_algebra({:atom, val}, state) do
     {inspect(val), state}
   end
   defp type_to_algebra({:tuple, args, _arity}, state) do
@@ -121,6 +121,48 @@ defmodule Types.Union do
     else
       <<?a + rem>>
     end
+  end
+
+  @doc """
+  Converts the given type AST to its inner type.
+  """
+  def ast_to_types(ast)
+
+  def ast_to_types({:boolean, _, []}) do
+    {:ok, [{:atom, true}, {:atom, false}]}
+  end
+  def ast_to_types({:integer, _, []}) do
+    {:ok, [:integer]}
+  end
+  def ast_to_types({:atom, _, []}) do
+    {:ok, [:atom]}
+  end
+  def ast_to_types(value) when is_atom(value) do
+    {:ok, [{:atom, value}]}
+  end
+  def ast_to_types({left, right}) do
+    with {:ok, left} <- ast_to_types(left),
+         {:ok, right} <- ast_to_types(right) do
+      {:ok, [{:tuple, [left, right], 2}]}
+    end
+  end
+  def ast_to_types({:{}, _, args}) do
+    with {:ok, args, arity} <- args_ast_to_types(args, [], 0) do
+      {:ok, [{:tuple, args, arity}]}
+    end
+  end
+  def ast_to_types(other) do
+    {:error, {:invalid_type, other}}
+  end
+
+  defp args_ast_to_types([arg | args], acc, arity) do
+    case ast_to_types(arg) do
+      {:ok, arg} -> args_ast_to_types(args, [arg | acc], arity + 1)
+      {:error, _} = error -> error
+    end
+  end
+  defp args_ast_to_types([], acc, arity) do
+    {:ok, :lists.reverse(acc), arity}
   end
 
   @doc """
@@ -252,8 +294,8 @@ defmodule Types.Union do
     end
   end
 
-  defp qualify(:atom, {:value, atom}, lvars, rvars) when is_atom(atom), do: {:superset, lvars, rvars}
-  defp qualify({:value, atom}, :atom, lvars, rvars) when is_atom(atom), do: {:subset, lvars, rvars}
+  defp qualify(:atom, {:atom, atom}, lvars, rvars) when is_atom(atom), do: {:superset, lvars, rvars}
+  defp qualify({:atom, atom}, :atom, lvars, rvars) when is_atom(atom), do: {:subset, lvars, rvars}
 
   defp qualify({:tuple, args1, arity}, {:tuple, args2, arity}, lvars, rvars) do
     qualify_args(args1, args2, lvars, rvars, :equal)

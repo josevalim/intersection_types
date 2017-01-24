@@ -4,8 +4,8 @@ defmodule Types.UnionTest do
   import Types.Union
 
   defmacro quoted_union(left, right) do
-    with {:ok, left, _} <- Types.Checker.ast_to_types(left),
-         {:ok, right, _} <- Types.Checker.ast_to_types(right) do
+    with {:ok, left} <- ast_to_types(left),
+         {:ok, right} <- ast_to_types(right) do
       quote do
         union(unquote(Macro.escape(left)),
               unquote(Macro.escape(right))) |> Enum.sort()
@@ -13,8 +13,8 @@ defmodule Types.UnionTest do
     else
       _ ->
         quote do
-          assert {:ok, _, _} = Types.Checker.ast_to_types(unquote(Macro.escape(left)))
-          assert {:ok, _, _} = Types.Checker.ast_to_types(unquote(Macro.escape(right)))
+          assert {:ok, _} = ast_to_types(unquote(Macro.escape(left)))
+          assert {:ok, _} = ast_to_types(unquote(Macro.escape(right)))
         end
     end
   end
@@ -31,37 +31,73 @@ defmodule Types.UnionTest do
              [:atom]
 
       assert quoted_union(integer(), :foo) ==
-             [:integer, {:value, :foo}]
+             [:integer, {:atom, :foo}]
     end
 
     test "tuples" do
       assert quoted_union({}, {:foo}) ==
-             [{:tuple, [], 0}, {:tuple, [[{:value, :foo}]], 1}]
+             [{:tuple, [], 0}, {:tuple, [[{:atom, :foo}]], 1}]
 
       assert quoted_union({:ok, atom()}, {:ok, :foo}) ==
-             [{:tuple, [[{:value, :ok}], [:atom]], 2}]
+             [{:tuple, [[{:atom, :ok}], [:atom]], 2}]
 
       assert quoted_union({:ok, atom()}, {:ok, atom()}) ==
-             [{:tuple, [[{:value, :ok}], [:atom]], 2}]
+             [{:tuple, [[{:atom, :ok}], [:atom]], 2}]
 
       assert quoted_union({boolean(), boolean()}, {boolean(), boolean()}) ==
-             [{:tuple, [[{:value, true}, {:value, false}], [{:value, true}, {:value, false}]], 2}]
+             [{:tuple, [[{:atom, true}, {:atom, false}], [{:atom, true}, {:atom, false}]], 2}]
 
       assert quoted_union({:foo, :bar}, {atom(), atom()}) ==
              [{:tuple, [[:atom], [:atom]], 2}]
 
-      assert quoted_union({:ok, integer()}, {:error, 1}) ==
-             [{:tuple, [[{:value, :error}], [:integer]], 2},
-              {:tuple, [[{:value, :ok}], [:integer]], 2}]
+      assert quoted_union({:ok, integer()}, {:error, integer()}) ==
+             [{:tuple, [[{:atom, :error}], [:integer]], 2},
+              {:tuple, [[{:atom, :ok}], [:integer]], 2}]
 
       # TODO: Write using quoted_union once we have |
       assert union([{:tuple, [[:atom, :integer], [:atom]], 2}],
-                   [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
+                   [{:tuple, [[{:atom, :foo}], [{:atom, :bar}]], 2}]) ==
              [{:tuple, [[:atom, :integer], [:atom]], 2}]
 
       assert union([{:tuple, [[:atom, :integer], [:atom]], 2}],
-                   [{:tuple, [[{:value, :foo}], [{:value, :bar}]], 2}]) ==
+                   [{:tuple, [[{:atom, :foo}], [{:atom, :bar}]], 2}]) ==
              [{:tuple, [[:atom, :integer], [:atom]], 2}]
+    end
+  end
+
+  defmacro quoted_ast_to_types(ast) do
+    quote do
+      ast_to_types(unquote(Macro.escape(ast)))
+    end
+  end
+
+  describe "ast_to_types/1" do
+    test "built-ins" do
+      assert quoted_ast_to_types(boolean()) |> elem(1) ==
+             [{:atom, true}, {:atom, false}]
+    end
+
+    test "base types" do
+      assert quoted_ast_to_types(atom()) |> elem(1) ==
+             [:atom]
+      assert quoted_ast_to_types(integer()) |> elem(1) ==
+             [:integer]
+    end
+
+    test "atoms" do
+      assert quoted_ast_to_types(:foo) |> elem(1) ==
+             [{:atom, :foo}]
+      assert quoted_ast_to_types(true) |> elem(1) ==
+             [{:atom, true}]
+      assert quoted_ast_to_types(false) |> elem(1) ==
+             [{:atom, false}]
+    end
+
+    test "tuples" do
+      assert quoted_ast_to_types({}) |> elem(1) ==
+             [{:tuple, [], 0}]
+      assert quoted_ast_to_types({:ok, atom()}) |> elem(1) ==
+             [{:tuple, [[{:atom, :ok}], [:atom]], 2}]
     end
   end
 end

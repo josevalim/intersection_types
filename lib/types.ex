@@ -52,19 +52,20 @@ defmodule Types do
 
   As you can see, the function with two clauses above inhabits both
   the type `(integer() -> integer())` and `(boolean() -> boolean())`.
-  This means that, if there is a function that may receive either
-  an integer or a boolean as argument, it requires both types, which
-  means that function exists in the intersection between the types
-  `(integer() -> integer())` and `(boolean() -> boolean())`.
+  This means that, if there is a function that receives an integer and
+  returns an integer as well as receive a boolean and returns a boolean,
+  it requires both types, which means that function exists in the
+  intersection between the types `(integer() -> integer())` and
+  `(boolean() -> boolean())`.
 
   In the type system, we simply write that as a type with multiple
   clauses:
 
       (integer() -> integer(); boolean() -> boolean())
 
-  The intersection types literature has a bunch of interesting examples
-  where intersection types can be used to infer the types where classic
-  Hindley Milner type systems wouldn't. For example:
+  The intersection types literature has many interesting examples
+  where intersection types can be used to infer the types where
+  classic Hindley Milner type systems wouldn't. For example:
 
       fn x -> {x.(0), x.(:foo)} end
 
@@ -150,9 +151,4 @@ defmodule Types do
   # pattern boolean() :: true | false
   # pattern atom()
   # pattern integer()
-
-  ## Literals
-  # integer
-  # atom
-  # tuples
 end
