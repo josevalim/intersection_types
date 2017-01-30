@@ -128,6 +128,12 @@ defmodule Types.Union do
   """
   def ast_to_types(ast)
 
+  def ast_to_types({:|, _, [left, right]}) do
+    with {:ok, left} <- ast_to_types(left),
+         {:ok, right} <- ast_to_types(right) do
+      {:ok, left ++ right}
+    end
+  end
   def ast_to_types({:boolean, _, []}) do
     {:ok, [{:atom, true}, {:atom, false}]}
   end

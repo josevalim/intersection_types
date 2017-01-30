@@ -54,13 +54,8 @@ defmodule Types.UnionTest do
              [{:tuple, [[{:atom, :error}], [:integer]], 2},
               {:tuple, [[{:atom, :ok}], [:integer]], 2}]
 
-      # TODO: Write using quoted_union once we have |
-      assert union([{:tuple, [[:atom, :integer], [:atom]], 2}],
-                   [{:tuple, [[{:atom, :foo}], [{:atom, :bar}]], 2}]) ==
-             [{:tuple, [[:atom, :integer], [:atom]], 2}]
-
-      assert union([{:tuple, [[:atom, :integer], [:atom]], 2}],
-                   [{:tuple, [[{:atom, :foo}], [{:atom, :bar}]], 2}]) ==
+      assert quoted_union({atom() | integer(), atom()},
+                          {:foo, :bar}) ==
              [{:tuple, [[:atom, :integer], [:atom]], 2}]
     end
   end
