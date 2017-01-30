@@ -134,6 +134,18 @@ defmodule Types.Checker do
     unify_fn(lefties, righties, keep, vars, type_vars, acc_vars)
   end
 
+  defp unify_each({:cons, left1, right1}, {:cons, left2, right2},
+                  keep, vars, type_vars, acc_vars) do
+    case unify_args([left1, right1], [left2, right2], keep, vars, type_vars, acc_vars) do
+      {:match, _, type_vars, acc_vars} ->
+        {:match, type_vars, acc_vars}
+      {:subset, [left, right], type_vars, acc_vars} ->
+        {:subset, {:cons, left, right}, type_vars, acc_vars}
+      {:disjoint, _, _, _} ->
+        :disjoint
+    end
+  end
+
   defp unify_each({:tuple, lefties, arity}, {:tuple, righties, arity},
                   keep, vars, type_vars, acc_vars) do
     case unify_args(lefties, righties, keep, vars, type_vars, acc_vars) do
@@ -790,6 +802,19 @@ defmodule Types.Checker do
 
   defp literal(value, state, _fun) when is_atom(value) do
     ok([{:atom, value}], state)
+  end
+  defp literal([], state, _fun) do
+    ok([:empty_list], state)
+  end
+  defp literal([{:|, _, [left, right]}], state, fun) do
+    with {:ok, [left, right], _, state} <- args([left, right], state, fun) do
+      ok([{:cons, left, right}], state)
+    end
+  end
+  defp literal([left | right], state, fun) do
+    with {:ok, [left, right], _, state} <- args([left, right], state, fun) do
+      ok([{:cons, left, right}], state)
+    end
   end
   defp literal({left, right}, state, fun) do
     with {:ok, args, arity, state} <- args([left, right], state, fun) do

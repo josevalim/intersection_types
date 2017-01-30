@@ -94,5 +94,13 @@ defmodule Types.UnionTest do
       assert quoted_ast_to_types({:ok, atom()}) |> elem(1) ==
              [{:tuple, [[{:atom, :ok}], [:atom]], 2}]
     end
+
+    test "empty_list and cons" do
+      assert quoted_ast_to_types(empty_list()) |> elem(1) ==
+             [:empty_list]
+
+      assert quoted_ast_to_types(cons(atom(), integer())) |> elem(1) ==
+             [{:cons, [:atom], [:integer]}]
+    end
   end
 end

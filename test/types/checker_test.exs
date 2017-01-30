@@ -116,6 +116,12 @@ defmodule Types.CheckerTest do
       assert quoted_of({:ok, :error}) |> format() == "{:ok, :error}"
     end
 
+    test "lists" do
+      assert quoted_of([]) |> format() == "empty_list()"
+      assert quoted_of([true | false]) |> format() == "cons(true, false)"
+      assert quoted_of([true, false]) |> format() == "cons(true, cons(false, empty_list()))"
+    end
+
     test "match" do
       assert {:error, _, {:disjoint_match, _, _}} =
                quoted_of({:ok, a :: atom()} = {:ok, 0})
@@ -688,6 +694,28 @@ defmodule Types.CheckerTest do
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                        (fn :foo -> :foo; :bar -> :bar end)) |> elem(1) ==
              [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], %{}}], 1}]
+    end
+  end
+
+  describe "of/1 lists" do
+    test "matching cons" do
+      assert quoted_of((fn [x | y] -> {x, y} end).([:foo])) |> format() ==
+             "{:foo, empty_list()}"
+
+      assert quoted_of((fn [x | y] -> {x, y} end).([:foo | :bar])) |> format() ==
+             "{:foo, :bar}"
+
+      assert quoted_of((fn [x | y] -> {x, y} end).([:foo, :bar, :baz])) |> format() ==
+             "{:foo, cons(:bar, cons(:baz, empty_list()))}"
+
+      assert quoted_of((fn [x, y, z] -> {x, y, z} end).([:foo, :bar, :baz])) |> format() ==
+             "{:foo, :bar, :baz}"
+
+      assert {:error, _, _} =
+             quoted_of((fn [x, y, z, w] -> {x, y, z, w} end).([:foo, :bar, :baz]))
+
+      assert {:error, _, _} =
+             quoted_of((fn [x | y] -> {x, y} end).([]))
     end
   end
 end

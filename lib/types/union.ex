@@ -19,9 +19,9 @@ defmodule Types.Union do
   # functions on this module:
   #
   #   traverse
-  #   quantify
+  #   qualify
   #   to_algebra
-  #   is_supertype?
+  #   supertype?
   #   ast_to_types
   #
 
@@ -74,6 +74,10 @@ defmodule Types.Union do
   defp type_to_algebra({:atom, val}, state) do
     {inspect(val), state}
   end
+  defp type_to_algebra({:cons, left, right}, state) do
+    {args, state} = args_to_algebra([left, right], state)
+    {A.surround("cons(", args, ")"), state}
+  end
   defp type_to_algebra({:tuple, args, _arity}, state) do
     {args, state} = args_to_algebra(args, state)
     {A.surround("{", args, "}"), state}
@@ -95,6 +99,7 @@ defmodule Types.Union do
 
   defp type_to_algebra(:atom, state), do: {"atom()", state}
   defp type_to_algebra(:integer, state), do: {"integer()", state}
+  defp type_to_algebra(:empty_list, state), do: {"empty_list()", state}
 
   defp args_to_algebra(args, state) do
     {args, state} = Enum.map_reduce(args, state, &types_to_algebra/2)
@@ -142,6 +147,15 @@ defmodule Types.Union do
   end
   def ast_to_types({:atom, _, []}) do
     {:ok, [:atom]}
+  end
+  def ast_to_types({:empty_list, _, []}) do
+    {:ok, [:empty_list]}
+  end
+  def ast_to_types({:cons, _, [left, right]}) do
+    with {:ok, left} <- ast_to_types(left),
+         {:ok, right} <- ast_to_types(right) do
+      {:ok, [{:cons, left, right}]}
+    end
   end
   def ast_to_types(value) when is_atom(value) do
     {:ok, [{:atom, value}]}
@@ -192,6 +206,15 @@ defmodule Types.Union do
             {{head, body, inferred}, state}
           end)
         traverse(types, [{:fn, clauses, arity} | acc], state, fun)
+      {:replace, type, state} ->
+        traverse(types, [type | acc], state, fun)
+    end
+  end
+  defp traverse([{:cons, left, right} = type | types], acc, state, fun) do
+    case fun.(type, state) do
+      {:ok, state} ->
+        {[left, right], state} = traverse_args([left, right], state, fun)
+        traverse(types, [{:cons, left, right} | acc], state, fun)
       {:replace, type, state} ->
         traverse(types, [type | acc], state, fun)
     end
@@ -307,6 +330,10 @@ defmodule Types.Union do
     qualify_args(args1, args2, lvars, rvars, :equal)
   end
 
+  defp qualify({:cons, left1, right1}, {:cons, left2, right2}, lvars, rvars) do
+    qualify_args([left1, right1], [left2, right2], lvars, rvars, :equal)
+  end
+
   defp qualify(_, _, lvars, rvars), do: {:disjoint, lvars, rvars}
 
   @doc """
@@ -386,6 +413,9 @@ defmodule Types.Union do
   def supertype?([type]), do: each_supertype?(type)
   def supertype?(types) when is_list(types), do: true
 
+  defp each_supertype?({:cons, left, right}) do
+    supertype?(left) or supertype?(right)
+  end
   defp each_supertype?({:tuple, args, _}) do
     Enum.any?(args, &supertype?/1)
   end
