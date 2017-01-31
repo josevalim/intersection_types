@@ -9,7 +9,7 @@ defmodule Types.Union do
   # The types that compose the union:
   #
   #   {:atom, val}
-  #   {:fn, [{head, body, inferred}], arity}
+  #   {:fn, [{head, body}], inferred, arity}
   #   {:tuple, [arg], arity}
   #   {:var, var_ctx, var_key}
   #   :integer
@@ -82,7 +82,8 @@ defmodule Types.Union do
     {args, state} = args_to_algebra(args, state)
     {A.surround("{", args, "}"), state}
   end
-  defp type_to_algebra({:fn, clauses, _arity}, state) do
+  defp type_to_algebra({:fn, clauses, inferred, _arity}, state) do
+    state = update_in(state.inferred, &Map.merge(&1, inferred))
     {clauses, state} = clauses_to_algebra(clauses, state)
     {A.surround("(", clauses, ")"), state}
   end
@@ -108,10 +109,9 @@ defmodule Types.Union do
 
   defp clauses_to_algebra(clauses, state) do
     {clauses, state} =
-      Enum.map_reduce(clauses, state, fn {head, body, inferred}, state ->
+      Enum.map_reduce(clauses, state, fn {head, body}, state ->
         {head, state} = args_to_algebra(head, state)
         {body, state} = types_to_algebra(body, state)
-        state = update_in(state.inferred, &Map.merge(&1, inferred))
         {A.nest(A.glue(A.concat(head, " ->"), body), 2), state}
       end)
     {A.fold_doc(clauses, &A.glue(A.concat(&1, ";"), &2)), state}
@@ -196,16 +196,16 @@ defmodule Types.Union do
     traverse(types, [], state, fun)
   end
 
-  defp traverse([{:fn, clauses, arity} = type | types], acc, state, fun) do
+  defp traverse([{:fn, clauses, inferred, arity} = type | types], acc, state, fun) do
     case fun.(type, state) do
       {:ok, state} ->
         {clauses, state} =
-          Enum.map_reduce(clauses, state, fn {head, body, inferred}, state ->
+          Enum.map_reduce(clauses, state, fn {head, body}, state ->
             {head, state} = traverse_args(head, state, fun)
             {body, state} = traverse(body, state, fun)
-            {{head, body, inferred}, state}
+            {{head, body}, state}
           end)
-        traverse(types, [{:fn, clauses, arity} | acc], state, fun)
+        traverse(types, [{:fn, clauses, inferred, arity} | acc], state, fun)
       {:replace, type, state} ->
         traverse(types, [type | acc], state, fun)
     end
@@ -419,8 +419,8 @@ defmodule Types.Union do
   defp each_supertype?({:tuple, args, _}) do
     Enum.any?(args, &supertype?/1)
   end
-  defp each_supertype?({:fn, clauses, _}) do
-    Enum.any?(clauses, fn {head, body, _} ->
+  defp each_supertype?({:fn, clauses, _, _}) do
+    Enum.any?(clauses, fn {head, body} ->
       Enum.any?(head, &supertype?/1) or supertype?(body)
     end)
   end

@@ -107,7 +107,7 @@ defmodule Types do
       which is the intersection between a type variable and a function.
       Similarly, for `x.(x.(y))` we infer the same type as in a Hindley-Milner
       type system as otherwise it would have the type `(a -> b) ^ (b -> c)`
-      which causes dependency between clauses. However, for expressions
+      which has dependency between clauses. However, for expressions
       such as `{x.(:foo), x.(:bar)}`, we infer the proper intersection
       type `(:bar -> a) ^ (:foo -> b)` expressed as `(:bar -> a; :foo -> b)`.
 

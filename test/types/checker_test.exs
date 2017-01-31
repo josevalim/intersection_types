@@ -95,10 +95,10 @@ defmodule Types.CheckerTest do
       assert {:disjoint, _, _, _} = Checker.unify(fn1, fn2, %{}, %{}, %{})
       assert {:disjoint, _, _, _} = Checker.unify(fn2, fn1, %{}, %{}, %{})
 
-      fn1 = [{:fn, [{[[:atom]], [{:var, {:x, nil}, 0}], %{0 => []}},
-                    {[[:integer]], [{:var, {:x, nil}, 0}], %{0 => []}}], 1}]
-      fn2 = [{:fn, [{[[:atom]], [:atom], %{}},
-                    {[[:integer]], [:integer], %{}}], 1}]
+      fn1 = [{:fn, [{[[:atom]], [{:var, {:x, nil}, 0}]},
+                    {[[:integer]], [{:var, {:x, nil}, 0}],}], %{0 => []}, 1}]
+      fn2 = [{:fn, [{[[:atom]], [:atom]},
+                    {[[:integer]], [:integer]}], %{}, 1}]
       assert {:match, _, _, %{0 => [:atom, :integer]}} = Checker.unify(fn1, fn2, %{}, %{}, %{})
       assert {:match, _, _, %{0 => [:atom, :integer]}} = Checker.unify(fn2, fn1, %{}, %{}, %{})
     end
@@ -632,68 +632,67 @@ defmodule Types.CheckerTest do
                [{[[{:var, {:x, nil}, 0}]],
                  [{:fn,
                    [{[[{:var, {:y, nil}, 1}]],
-                     [{:var, {:y, nil}, 1}],
-                     %{1 => [:atom]}}], 1}],
-                %{0 => []}}], 1}]
+                     [{:var, {:y, nil}, 1}]
+                  }], %{1 => [:atom]}, 1}]
+                }], %{0 => []}, 1}]
 
       assert quoted_of(fn x -> fn y -> y end end) |> elem(1) ==
              [{:fn,
                [{[[{:var, {:x, nil}, 0}]],
                  [{:fn,
                    [{[[{:var, {:y, nil}, 1}]],
-                     [{:var, {:y, nil}, 1}],
-                     %{1 => []}}], 1}],
-                %{0 => []}}], 1}]
+                     [{:var, {:y, nil}, 1}]
+                   }], %{1 => []}, 1}]
+                }], %{0 => []}, 1}]
 
       assert quoted_of(fn x -> fn y -> x end end) |> elem(1) ==
              [{:fn,
                [{[[{:var, {:x, nil}, 0}]],
                  [{:fn,
                    [{[[{:var, {:y, nil}, 1}]],
-                     [{:var, {:x, nil}, 0}],
-                     %{1 => []}}], 1}],
-                %{0 => []}}], 1}]
+                     [{:var, {:x, nil}, 0}]
+                    }], %{1 => []}, 1}]
+                }], %{0 => []}, 1}]
 
       assert quoted_of(fn x -> fn y -> x.(y) end end) |> elem(1) ==
              [{:fn,
-              [{[[{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}], %{}}], 1}]],
-                [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}], %{}}], 1}],
-                %{1 => [], 2 => []}}], 1}]
+              [{[[{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}]}], %{}, 1}]],
+                [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}]}], %{}, 1}]
+               }], %{1 => [], 2 => []}, 1}]
 
       assert quoted_of(fn x -> fn y :: atom() -> x.(y) end end) |> elem(1) ==
              [{:fn,
-              [{[[{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}], %{}}], 1}]],
-                [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}], %{}}], 1}],
-                %{1 => [:atom], 2 => []}}], 1}]
+              [{[[{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}]}], %{}, 1}]],
+                [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:x, nil}, 2}]}], %{}, 1}],
+               }], %{1 => [:atom], 2 => []}, 1}]
 
       assert quoted_of(fn x -> fn y -> x.(x.(y)) end end) |> elem(1) ==
              [{:fn,
-              [{[[{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], %{}}], 1}]],
-                [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], %{}}], 1}],
-                %{1 => []}}],
-              1}]
+              [{[[{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}]}], %{}, 1}]],
+                [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}]}], %{}, 1}],
+               }], %{1 => []}, 1}]
 
       assert quoted_of(fn x -> fn y -> fn z -> x.(x.(z)) end end end) |> elem(1) ==
              [{:fn,
-               [{[[{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:z, nil}, 2}], %{}}], 1}]],
+               [{[[{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:z, nil}, 2}]}], %{}, 1}]],
                  [{:fn,
                    [{[[{:var, {:y, nil}, 1}]],
-                   [{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:z, nil}, 2}], %{}}], 1}],
-                   %{1 => []}}], 1}],
-                 %{2 => []}}], 1}]
+                   [{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:z, nil}, 2}]}], %{}, 1}],
+                  }], %{1 => []}, 1}]
+                }], %{2 => []}, 1}]
 
       assert quoted_of(fn x -> fn y -> fn z -> x.(y.(z)) end end end) |> elem(1) ==
              [{:fn,
-               [{[[{:fn, [{[[{:var, {:y, nil}, 3}]], [{:var, {:x, nil}, 4}], %{}}], 1}]],
+               [{[[{:fn, [{[[{:var, {:y, nil}, 3}]], [{:var, {:x, nil}, 4}]}], %{}, 1}]],
                  [{:fn,
-                   [{[[{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:y, nil}, 3}], %{}}], 1}]],
-                     [{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:x, nil}, 4}], %{}}], 1}],
-                     %{2 => []}}], 1}],
-                 %{3 => [], 4 => []}}], 1}]
+                   [{[[{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:y, nil}, 3}]}], %{}, 1}]],
+                     [{:fn, [{[[{:var, {:z, nil}, 2}]], [{:var, {:x, nil}, 4}]}], %{}, 1}],
+                    }], %{2 => []}, 1}],
+                }], %{3 => [], 4 => []}, 1}]
 
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                        (fn :foo -> :foo; :bar -> :bar end)) |> elem(1) ==
-             [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}], %{}}], 1}]
+             [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}]}], %{}, 1}]
     end
   end
 
