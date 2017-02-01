@@ -25,6 +25,14 @@ defmodule Types.CheckerTest do
              {:match, [{:var, {:x, Elixir}, 0}], %{0 => [:atom, :integer]}, %{0 => [:atom, :integer]}}
     end
 
+    test "checks all on the right side" do
+      assert Checker.unify([:atom], [:atom, :integer], %{}, %{}, %{}) ==
+             {:disjoint, [:atom], %{}, %{}}
+
+      assert Checker.unify([{:tuple, [[:atom]], 1}], [{:tuple, [[:atom, :integer]], 1}], %{}, %{}, %{}) ==
+             {:disjoint, [], %{}, %{}}
+    end
+
     test "tuple root unions" do
       assert Checker.unify([{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
                            [{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
@@ -715,6 +723,27 @@ defmodule Types.CheckerTest do
 
       assert {:error, _, _} =
              quoted_of((fn [x | y] -> {x, y} end).([]))
+    end
+  end
+
+  describe "of/1 recur" do
+    test "recursive tuples" do
+      # Free variables
+      assert quoted_of(recur = fn
+        {:+, num} ->
+          recur(num)
+        num :: integer() ->
+          num
+      end) |> format() == "({:+, a} -> :ok; integer() -> integer()) when a: integer() | {:+, a}"
+
+      # Superset variables
+      assert quoted_of(recur = fn
+        {:+, num} ->
+          (fn x :: integer() -> x; y :: atom() -> y end).(num)
+          recur(num)
+        num :: integer() ->
+          num
+      end) |> format() == "({:+, a} -> :ok; integer() -> integer()) when a: integer() | {:+, a}"
     end
   end
 end

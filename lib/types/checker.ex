@@ -191,6 +191,8 @@ defmodule Types.Checker do
 
   defp unify_fn([{left_head, left_body} | lefties], left_inferred, righties, right_inferred,
                 keep, vars, type_vars, acc_vars) do
+    keep = Map.merge(keep, left_inferred)
+
     case unify_fn(left_head, left_body, left_inferred, righties, right_inferred,
                   keep, vars, type_vars, acc_vars, false) do
       {type_vars, acc_vars} ->
@@ -206,7 +208,7 @@ defmodule Types.Checker do
   defp unify_fn(left_head, left_body, left_inferred,
                 [{right_head, right_body} | clauses], right_inferred,
                 keep, vars, type_vars, acc_vars, matched?) do
-    keep = keep |> Map.merge(left_inferred) |> Map.merge(right_inferred)
+    keep = Map.merge(keep, right_inferred)
     vars = Map.merge(vars, keep)
     type_vars = Map.merge(type_vars, keep)
 
@@ -315,14 +317,21 @@ defmodule Types.Checker do
   end
 
   defp of({:fn, _, clauses}, %{level: level} = state) do
-    with {:ok, clauses_state, inferred, state} <- of_clauses(clauses, %{state | level: level + 1}),
-         {:ok, clauses, inferred} <- of_recur(clauses_state, inferred) do
+    with {:ok, clauses, inferred, state} <- of_fn_clauses(clauses, %{state | level: level + 1}) do
       ok([{:fn, clauses, inferred, 1}], %{state | level: level})
     end
   end
 
   defp of({:__block__, _meta, args}, state) do
     of_block(args, state)
+  end
+
+  # TODO: This is a special case for recursion
+  defp of({:=, _, [{:recur, _, _}, {:fn, _, clauses}]}, state) do
+    with {:ok, clauses_state, state} <- of_def(clauses, state),
+         {:ok, clauses, inferred} <- of_recur(clauses_state) do
+      ok([{:fn, clauses, inferred, 1}], state)
+    end
   end
 
   defp of({:=, meta, [left, right]}, state) do
@@ -347,15 +356,35 @@ defmodule Types.Checker do
     end
   end
 
+  defp of({name, _, _} = value, state) when name in [:{}, :<<>>] do
+    literal(value, state, &of/2)
+  end
+
+  # TODO: This is a special case for recursion
+  defp of({name, meta, args}, state) when is_list(args) do
+    if name == :recur do
+      with {:ok, args, _arity, state} <- args(args, state, &of/2) do
+        %{rec: rec} = state
+        state = %{state | rec: [{args, meta, :ret} | rec]}
+        ok([{:atom, :ok}], state)
+      end
+    else
+      raise "only recur is supported"
+    end
+  end
+
   defp of(value, state) do
     literal(value, state, &of/2)
   end
 
   ## Apply
 
-  defp of_apply([{:fn, clauses, inferred, arity} | types], arity, meta, args, state, acc, fun_state) do
-    with {:ok, return, state} <- of_fn_apply(clauses, inferred, meta, args, state),
-         do: of_apply(types, arity, meta, args, state, Union.union(acc, return), fun_state)
+  defp of_apply([{:fn, clauses, fn_inferred, arity} | types], arity, meta, args,
+                %{inferred: inferred} = state, acc, fun_state) do
+    with {:ok, inferred, return} <- of_fn_apply(clauses, fn_inferred, meta, args, inferred) do
+      of_apply(types, arity, meta, args, %{state | inferred: inferred},
+               Union.union(acc, return), fun_state)
+    end
   end
   defp of_apply([{:var, var_ctx, var_counter} | types], arity, meta, args, state, acc, fun_state) do
     with {:ok, return, state} <- of_var_apply(var_ctx, var_counter, meta, args, arity, state),
@@ -534,15 +563,14 @@ defmodule Types.Checker do
 
   ### Fn Apply
 
-  defp of_fn_apply(clauses, fn_inferred, meta, [arg_types], state) do
-    %{inferred: inferred} = state
+  defp of_fn_apply(clauses, fn_inferred, meta, [arg_types], inferred) do
     inferred = Map.merge(inferred, fn_inferred)
 
     case of_fn_apply_each(clauses, fn_inferred, arg_types, inferred, arg_types, inferred, []) do
       {:ok, acc_inferred, acc_body} ->
-        ok(acc_body, %{state | inferred: acc_inferred})
+        {:ok, acc_inferred, acc_body}
       {:error, pending} ->
-        error(meta, {:disjoint_apply, pending, clauses, arg_types})
+        error(meta, {:disjoint_apply, pending, clauses, [arg_types]})
     end
   end
 
@@ -608,90 +636,140 @@ defmodule Types.Checker do
 
   ## Clauses
 
-  # TODO: Support multiple args
-  # TODO: Check if clauses have overlapping types
-  defp of_clauses(clauses, state) do
-    of_clauses(clauses, state, [], %{}, state)
+  defp of_fn_clauses(clauses, state) do
+    of_fn_clauses(clauses, state, [], %{}, state)
   end
 
-  defp of_clauses([{:->, _, [[arg], body]} | clauses], state, acc_clauses, acc_inferred, acc_state) do
-    with {:ok, arg, %{match: match, vars: vars} = clause_state} <- of_pattern(arg, acc_state),
-         clause_state = %{clause_state | vars: Map.merge(vars, match)},
-         {:ok, body, clause_state} <- of(body, clause_state) do
-      %{inferred: inferred, levels: levels, level: level} = clause_state
-
-      # Get all variables introduced in the function head,
-      # including the ones that may have come as part of
-      # applies.
-      #
-      # Then we check they belong to the current level and
-      # make sure they are either free or are a supertype.
-      match_counters =
-        for {_, {_, [{:var, _, counter}]}} <- match, do: counter
-
-      clause_counters =
-        of_clauses_deps(match_counters, inferred, level, levels, [])
-
-      # We will expand everything that is not in the clause
-      # counters and belong to the current level.
-      expand = Map.drop(inferred, clause_counters)
-      {body, unused_counters} = bind_level(body, clause_counters, expand, level, levels)
-
-      # If there is a clause variable that was not used in the body,
-      # and it is not free, we shall expand it.
-      {unused_counters, expand} =
-        Enum.reduce(unused_counters, {[], expand}, fn counter, {counters, expand} ->
-          case Map.get(inferred, counter, []) do
-            [] -> {counters, expand}
-            types -> {[counter | counters], Map.put(expand, counter, types)}
-          end
-        end)
-
-      # Go through all arguments and expand what we are not keeping.
-      {head, _} = bind_level_args([arg], [], expand, level, levels)
-
-      clause_counters =
-        clause_counters -- unused_counters
-
-      clause_inferred =
-        for counter <- clause_counters,
-            {value, _} = bind_level(Map.get(inferred, counter, []), [], expand, level, levels),
-            do: {counter, value},
-            into: %{}
-
+  defp of_fn_clauses([clause | clauses], state, acc_clauses, acc_inferred, acc_state) do
+    with {:ok, head, body, clause_state} <- of_fn_clause(clause, acc_state) do
+      {clause, clause_inferred, state_inferred} = of_fn_expand(head, body, clause_state)
       acc_inferred = Map.merge(acc_inferred, clause_inferred)
-      acc_state = %{replace_vars(clause_state, state) | inferred: Map.drop(inferred, clause_counters)}
-      of_clauses(clauses, state, [{{head, body}, acc_state} | acc_clauses], acc_inferred, acc_state)
+      acc_state = %{replace_vars(clause_state, state) | inferred: state_inferred}
+      of_fn_clauses(clauses, state, [clause | acc_clauses], acc_inferred, acc_state)
     end
   end
-  defp of_clauses([], _state, acc_clauses, acc_inferred, acc_state) do
+  defp of_fn_clauses([], _state, acc_clauses, acc_inferred, acc_state) do
     {:ok, :lists.reverse(acc_clauses), acc_inferred, acc_state}
   end
 
-  defp of_clauses_deps([key | keys], inferred, level, levels, acc) do
+  # TODO: Support multiple args
+  # TODO: Check if clauses have overlapping types
+  defp of_fn_clause({:->, _, [[arg], body]}, state) do
+    with {:ok, arg, %{match: match, vars: vars} = clause_state} <- of_pattern(arg, state),
+         clause_state = %{clause_state | vars: Map.merge(vars, match)},
+         {:ok, body, clause_state} <- of(body, clause_state) do
+      {:ok, [arg], body, %{clause_state | match: match}}
+    end
+  end
+
+  defp of_fn_expand(head, body, clause_state) do
+    %{inferred: inferred, levels: levels, level: level, match: match} = clause_state
+
+    # Get all variables introduced in the function head,
+    # including the ones that may have come as part of
+    # applying to a variable.
+    #
+    # Then we check they belong to the current level and
+    # make sure they are either free or are a supertype.
+    match_counters =
+      for {_, {_, [{:var, _, counter}]}} <- match, do: counter
+
+    clause_counters =
+      of_fn_match(match_counters, inferred, level, levels, [])
+
+    # We will expand everything that is not in the clause
+    # counters and belong to the current level.
+    expand = Map.drop(inferred, clause_counters)
+    {body, unused_counters} = bind_level(body, clause_counters, expand, level, levels)
+
+    # If there is a clause variable that was not used in the body,
+    # and it is not free, we shall expand it.
+    {unused_counters, expand} =
+      Enum.reduce(unused_counters, {[], expand}, fn counter, {counters, expand} ->
+        case Map.get(inferred, counter, []) do
+          [] -> {counters, expand}
+          types -> {[counter | counters], Map.put(expand, counter, types)}
+        end
+      end)
+
+    # Go through all arguments and expand what we are not keeping.
+    {head, _} = bind_level_args(head, [], expand, level, levels)
+
+    clause_counters =
+      clause_counters -- unused_counters
+
+    clause_inferred =
+      for counter <- clause_counters,
+          {value, _} = bind_level(Map.get(inferred, counter, []), [], expand, level, levels),
+          do: {counter, value},
+          into: %{}
+
+    {{head, body}, clause_inferred, Map.drop(inferred, clause_counters)}
+  end
+
+  defp of_fn_match([key | keys], inferred, level, levels, acc) do
     case Map.fetch!(levels, key) do
       {^level, _applies, deps} ->
         value = Map.get(inferred, key, [])
         acc = if Union.supertype?(value), do: [key | acc], else: acc
-        acc = of_clauses_deps(deps, inferred, level, levels, acc)
-        of_clauses_deps(keys, inferred, level, levels, acc)
+        acc = of_fn_match(deps, inferred, level, levels, acc)
+        of_fn_match(keys, inferred, level, levels, acc)
       {_, _, _} ->
-        of_clauses_deps(keys, inferred, level, levels, acc)
+        of_fn_match(keys, inferred, level, levels, acc)
     end
   end
-  defp of_clauses_deps([], _inferred, _level, _levels, acc) do
+  defp of_fn_match([], _inferred, _level, _levels, acc) do
     acc
   end
 
-  defp of_recur(clauses_state, inferred) do
-    clauses = for {clause, _} <- clauses_state, do: clause
+  ## Recursive definitions
 
-    # TODO: Check if we need the whole state or only rec.
-    if Enum.any?(clauses_state, fn {_, %{rec: rec}} -> rec != [] end) do
-      raise "oops"
-    else
-      {:ok, clauses, inferred}
+  defp of_def(clauses, state) do
+    of_def(clauses, state, [], state)
+  end
+
+  defp of_def([clause | clauses], state, acc_clauses, acc_state) do
+    with {:ok, head, body, clause_state} <- of_fn_clause(clause, acc_state) do
+      acc_state = replace_vars(clause_state, state)
+      of_def(clauses, state, [{{head, body}, clause_state} | acc_clauses], acc_state)
     end
+  end
+  defp of_def([], _state, acc_clauses, acc_state) do
+    {:ok, :lists.reverse(acc_clauses), acc_state}
+  end
+
+  defp of_recur(clauses_state) do
+    clauses = for {clause, _} <- clauses_state, do: clause
+    of_recur(clauses_state, clauses, [])
+  end
+
+  defp of_recur([{_, %{rec: []}} = clause_state | clauses_state], clauses, acc) do
+    of_recur(clauses_state, clauses, [clause_state | acc])
+  end
+  defp of_recur([{clause, %{rec: recs, inferred: inferred} = state} | clauses_state], clauses, acc) do
+    case of_recur_rec(recs, clauses, inferred) do
+      {:ok, inferred} ->
+        of_recur(clauses_state, clauses, [{clause, %{state | inferred: inferred}} | acc])
+      {:error, _, _} = error ->
+        error
+    end
+  end
+  defp of_recur([], _clauses, acc) do
+    {clauses, inferred} =
+      Enum.map_reduce(:lists.reverse(acc), %{}, fn {{head, body}, state}, acc_inferred ->
+        {clause, clause_inferred, _} = of_fn_expand(head, body, state)
+        {clause, Map.merge(acc_inferred, clause_inferred)}
+      end)
+    {:ok, clauses, inferred}
+  end
+
+  defp of_recur_rec([{args, meta, _ret} | recs], clauses, inferred) do
+    with {:ok, inferred, _return} <- of_fn_apply(clauses, inferred, meta, args, inferred) do
+      of_recur_rec(recs, clauses, inferred)
+    end
+  end
+  defp of_recur_rec([], _original, inferred) do
+    {:ok, inferred}
   end
 
   ## Blocks
@@ -876,7 +954,7 @@ defmodule Types.Checker do
   # The :vars map keeps all Elixir variables and their types
   # The :inferred map keeps track of all inferred types
   # The :levels map keeps the variable level as well as all related level variables
-  # The :rec map keeps all recursive variables
+  # The :rec keeps all recursive calls that must be resolved later
   @state %{counter: 0, level: 0, match: %{}, vars: %{}, inferred: %{},
            levels: %{}, rec: []}
 
