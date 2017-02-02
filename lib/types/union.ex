@@ -234,10 +234,9 @@ defmodule Types.Union do
         traverse(types, [type | acc], state, fun)
       {:replace, type, state} ->
         traverse(types, [type | acc], state, fun)
-      {:union, extra, state} ->
-        {extra, state} = traverse(extra, [], state, fun)
+      {:union, union, state} ->
         {types, state} = traverse(types, acc, state, fun)
-        {union(extra, types), state}
+        {union(union, types), state}
     end
   end
   defp traverse([], acc, state, _fun) do
@@ -427,4 +426,24 @@ defmodule Types.Union do
 
   defp each_supertype?(:atom), do: true
   defp each_supertype?(_), do: false
+
+  @doc """
+  Returns true if the given type is recursive.
+  """
+  def recursive?(types, key), do: Enum.any?(types, &each_recursive?(&1, key))
+
+  defp each_recursive?({:cons, left, right}, key) do
+    recursive?(left, key) or recursive?(right, key)
+  end
+  defp each_recursive?({:tuple, args, _}, key) do
+    Enum.any?(args, &recursive?(&1, key))
+  end
+  defp each_recursive?({:fn, clauses, _, _}, key) do
+    Enum.any?(clauses, fn {head, body} ->
+      Enum.any?(head, &recursive?(&1, key)) or recursive?(body, key)
+    end)
+  end
+
+  defp each_recursive?({:var, _, key}, key), do: true
+  defp each_recursive?(_, _key), do: false
 end

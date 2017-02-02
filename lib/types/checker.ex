@@ -94,7 +94,7 @@ defmodule Types.Checker do
     {:match, type_vars, acc_vars}
   end
 
-  defp unify_each({:var, _, key1}, {:var, _, key2} = right, _keep, vars, type_vars, acc_vars) do
+  defp unify_each({:var, _, key1}, {:var, _, key2} = right, keep, vars, type_vars, acc_vars) do
     case {Map.get(vars, key1, []), Map.get(vars, key2, [])} do
       {[], _} ->
         type_vars =
@@ -105,7 +105,6 @@ defmodule Types.Checker do
           |> Map.put(key2, Map.get(type_vars, key2, []))
           |> Map.update(key1, [right], &Union.union(&1, [right]))
         {:match, type_vars, acc_vars}
-      # TODO: This needs to become an occurs check.
       {[{:var, _, ^key2}], []} ->
         {:match, type_vars, acc_vars}
       {left_value, []} ->
@@ -118,6 +117,21 @@ defmodule Types.Checker do
           |> Map.update(key2, left_value, &Union.union(&1, left_value))
           |> Map.update(key1, [right], &Union.union(&1 -- left_value, [right]))
         {:match, type_vars, acc_vars}
+      {left_value, right_value} ->
+        with {_, [_ | _] = match, type_vars, acc_vars} <-
+               unify(left_value, right_value, keep, vars, type_vars, acc_vars) do
+          type_vars =
+            type_vars
+            |> Map.update(key1, match, &Union.union(&1 -- left_value, match))
+            |> Map.update(key2, match, &Union.union(&1 -- right_value, match))
+          acc_vars =
+            acc_vars
+            |> Map.update(key1, match, &Union.union(&1 -- left_value, match))
+            |> Map.update(key2, match, &Union.union(&1 -- right_value, match))
+          {:match, type_vars, acc_vars}
+        else
+          _ -> :disjoint
+        end
     end
   end
 
@@ -260,7 +274,7 @@ defmodule Types.Checker do
           %{^counter => _} ->
             case Map.get(vars, counter, []) do
               [_ | _] = existing ->
-                {:union, existing, acc}
+                {:union, bind(existing, only, vars), acc}
               _ ->
                 {:ok, acc}
             end
@@ -273,30 +287,46 @@ defmodule Types.Checker do
   end
 
   # Similar to bind but checks exclusively for current levels.
-  defp bind_level(types, counters, vars, level, levels) do
-    Union.traverse(types, counters, fn
-      {:var, _, counter}, counters ->
-        case Map.fetch(levels, counter) do
-          {:ok, {var_level, _, _}} when var_level < level ->
-            {:ok, counters}
-          _ ->
-            counters = List.delete(counters, counter)
+  defp bind_level(types, unused, vars, level, levels) do
+    bind_level_traverse(types, {unused, []}, vars, level, levels)
+  end
 
-            case Map.get(vars, counter, []) do
-              [_ | _] = existing ->
-                {:union, existing, counters}
-              _ ->
-                {:ok, counters}
+  defp bind_level_args(args, acc, vars, level, levels) do
+    Enum.map_reduce(args, {acc, []}, &bind_level_traverse(&1, &2, vars, level, levels))
+  end
+
+  defp bind_level_traverse(types, acc, vars, level, levels) do
+    Union.traverse(types, acc, &bind_level_each(&1, &2, vars, level, levels))
+  end
+
+  defp bind_level_each({:var, _, counter}, {unused, rec}, vars, level, levels) do
+    case Map.fetch(levels, counter) do
+      {:ok, {var_level, _, _}} when var_level < level ->
+        {:ok, {unused, rec}}
+      _ ->
+        unused = List.delete(unused, counter)
+
+        case Map.get(vars, counter, []) do
+          [_ | _] = existing ->
+            try do
+              vars = Map.put(vars, counter, :recursive)
+              bind_level_traverse(existing, {unused, rec}, vars, level, levels)
+            catch
+              :recursive -> {:ok, {unused, [counter | rec]}}
+            else
+              {existing, acc} -> {:union, existing, acc}
             end
+          [] ->
+            {:ok, {unused, rec}}
+          :recursive ->
+            throw(:recursive)
         end
-      _, counters ->
-        {:ok, counters}
-    end)
+    end
+  end
+  defp bind_level_each(_, acc, _vars, _level, _levels) do
+    {:ok, acc}
   end
 
-  defp bind_level_args(args, counters, vars, level, levels) do
-    Enum.map_reduce(args, counters, &bind_level(&1, &2, vars, level, levels))
-  end
 
   @doc """
   Returns the type of the given expression.
@@ -328,8 +358,8 @@ defmodule Types.Checker do
 
   # TODO: This is a special case for recursion
   defp of({:=, _, [{:recur, _, _}, {:fn, _, clauses}]}, state) do
-    with {:ok, clauses_state, state} <- of_def(clauses, state),
-         {:ok, clauses, inferred} <- of_recur(clauses_state) do
+    with {:ok, clauses_state, clause_inferred, state} <- of_def(clauses, state),
+         {:ok, clauses, inferred} <- of_recur(clauses_state, clause_inferred) do
       ok([{:fn, clauses, inferred, 1}], state)
     end
   end
@@ -680,7 +710,12 @@ defmodule Types.Checker do
     # We will expand everything that is not in the clause
     # counters and belong to the current level.
     expand = Map.drop(inferred, clause_counters)
-    {body, unused_counters} = bind_level(body, clause_counters, expand, level, levels)
+    {body, {unused_counters, rec_counters}} =
+      bind_level(body, clause_counters, expand, level, levels)
+
+    # Any recursive counter should not be expanded
+    expand = Map.drop(expand, rec_counters)
+    clause_counters = Enum.uniq(rec_counters) ++ clause_counters
 
     # If there is a clause variable that was not used in the body,
     # and it is not free, we shall expand it.
@@ -693,10 +728,10 @@ defmodule Types.Checker do
       end)
 
     # Go through all arguments and expand what we are not keeping.
-    {head, _} = bind_level_args(head, [], expand, level, levels)
+    {head, {_, rec_counters}} =
+      bind_level_args(head, [], expand, level, levels)
 
-    clause_counters =
-      clause_counters -- unused_counters
+    clause_counters = (clause_counters -- unused_counters) ++ rec_counters
 
     clause_inferred =
       for counter <- clause_counters,
@@ -725,36 +760,45 @@ defmodule Types.Checker do
   ## Recursive definitions
 
   defp of_def(clauses, state) do
-    of_def(clauses, state, [], state)
+    of_def(clauses, [], %{}, state)
   end
 
-  defp of_def([clause | clauses], state, acc_clauses, acc_state) do
+  defp of_def([clause | clauses], acc_clauses, acc_inferred, acc_state) do
     with {:ok, head, body, clause_state} <- of_fn_clause(clause, acc_state) do
-      acc_state = replace_vars(clause_state, state)
-      of_def(clauses, state, [{{head, body}, clause_state} | acc_clauses], acc_state)
+
+      # {clause, clause_inferred, state_inferred} = of_fn_expand(head, body, clause_state)
+      # acc_inferred = Map.merge(acc_inferred, clause_inferred)
+      # acc_state = %{replace_vars(clause_state, state) | inferred: state_inferred, rec: []}
+
+      %{inferred: clause_inferred, counter: counter} = clause_state
+      acc_state = %{acc_state | counter: counter}
+      acc_inferred = Map.merge(acc_inferred, clause_inferred)
+      of_def(clauses, [{{head, body}, clause_state} | acc_clauses], acc_inferred, acc_state)
     end
   end
-  defp of_def([], _state, acc_clauses, acc_state) do
-    {:ok, :lists.reverse(acc_clauses), acc_state}
+  defp of_def([], acc_clauses, acc_inferred, acc_state) do
+    {:ok, :lists.reverse(acc_clauses), acc_inferred, acc_state}
   end
 
-  defp of_recur(clauses_state) do
+  defp of_recur(clauses_state, clause_inferred) do
     clauses = for {clause, _} <- clauses_state, do: clause
-    of_recur(clauses_state, clauses, [])
+    of_recur(clauses_state, clauses, clause_inferred, [])
   end
 
-  defp of_recur([{_, %{rec: []}} = clause_state | clauses_state], clauses, acc) do
-    of_recur(clauses_state, clauses, [clause_state | acc])
+  defp of_recur([{_, %{rec: []}} = clause_state | clauses_state], clauses, inferred, acc) do
+    of_recur(clauses_state, clauses, inferred, [clause_state | acc])
   end
-  defp of_recur([{clause, %{rec: recs, inferred: inferred} = state} | clauses_state], clauses, acc) do
+  defp of_recur([{clause, %{rec: recs} = state} | clauses_state],
+                clauses, inferred, acc) do
     case of_recur_rec(recs, clauses, inferred) do
-      {:ok, inferred} ->
-        of_recur(clauses_state, clauses, [{clause, %{state | inferred: inferred}} | acc])
+      {:ok, clause_inferred} ->
+        state = update_in state.inferred, &of_recur_keep(&1, clause_inferred)
+        of_recur(clauses_state, clauses, inferred, [{clause, state} | acc])
       {:error, _, _} = error ->
         error
     end
   end
-  defp of_recur([], _clauses, acc) do
+  defp of_recur([], _clauses, _inferred, acc) do
     {clauses, inferred} =
       Enum.map_reduce(:lists.reverse(acc), %{}, fn {{head, body}, state}, acc_inferred ->
         {clause, clause_inferred, _} = of_fn_expand(head, body, state)
@@ -763,9 +807,15 @@ defmodule Types.Checker do
     {:ok, clauses, inferred}
   end
 
+  defp of_recur_keep(original, inferred) do
+    for {k, _} <- original,
+        do: {k, Map.fetch!(inferred, k)},
+        into: %{}
+  end
+
   defp of_recur_rec([{args, meta, _ret} | recs], clauses, inferred) do
-    with {:ok, inferred, _return} <- of_fn_apply(clauses, inferred, meta, args, inferred) do
-      of_recur_rec(recs, clauses, inferred)
+    with {:ok, after_inferred, _return} <- of_fn_apply(clauses, inferred, meta, args, inferred) do
+      of_recur_rec(recs, clauses, after_inferred)
     end
   end
   defp of_recur_rec([], _original, inferred) do

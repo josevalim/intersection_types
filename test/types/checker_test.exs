@@ -166,9 +166,6 @@ defmodule Types.CheckerTest do
       assert quoted_of((y = fn x -> fn y -> x.(x.(y)) end end; {y, y})) |> format() ==
              "{((a -> a) -> (a -> a)), ((b -> b) -> (b -> b))}"
 
-      assert quoted_of((y = (fn x -> fn y -> x.(x.(y)) end end).(fn z -> z end); {y, y})) |> format() ==
-             "{(a -> a), (b -> b)}"
-
       assert quoted_of((w = fn x -> fn y -> fn z -> x.(y.(z)) end end end; {w, w})) |> format() ==
              "{((a -> b) -> ((c -> a) -> (c -> b))), ((d -> e) -> ((f -> d) -> (f -> e)))}"
 
@@ -373,11 +370,6 @@ defmodule Types.CheckerTest do
                        (:foo)) |> format() ==
              ":foo"
 
-      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
-                       (fn z -> z end).
-                       (fn :foo -> :foo; :bar -> :bar end)) |> format() ==
-             "(:foo -> :foo; :bar -> :bar)"
-
       # (((b -> b) -> a) -> a) matches
       assert quoted_of((fn x -> x.(fn y -> y end) end).
                        (fn x -> {x.(:foo), x.(:bar)} end)) |> format() ==
@@ -390,6 +382,20 @@ defmodule Types.CheckerTest do
       assert quoted_of((fn x -> {x, x.(fn y -> y end)} end).
                        (fn x -> {x.(:foo), x.(:bar)} end)) |> format() ==
              "{((:bar | :foo -> :bar | :foo) -> {:foo, :bar}), {:foo, :bar}}"
+    end
+
+    test "apply with function argument and recursive" do
+      # Generalization
+      assert quoted_of((
+        y = (fn x -> fn y -> x.(x.(y)) end end).(fn z -> z end)
+        {y, y}
+      )) |> format() == "{(a -> a), (b -> b)}"
+
+      #  Multiple applications
+      assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
+                 (fn z -> z end).
+                 (fn :foo -> :foo; :bar -> :bar end)) |> format() ==
+             "(:foo -> :foo; :bar -> :bar)"
     end
 
     test "apply on intersection types" do
@@ -727,10 +733,21 @@ defmodule Types.CheckerTest do
   end
 
   describe "of/1 recur" do
-    test "recursive tuples" do
+    # TODO: Handle return results
+
+    test "single variable recursive tuples" do
       # Free variables
       assert quoted_of(recur = fn
         {:+, num} ->
+          recur(num)
+        num :: integer() ->
+          num
+      end) |> format() == "({:+, a} -> :ok; integer() -> integer()) when a: integer() | {:+, a}"
+
+      # Free variables idempotency
+      assert quoted_of(recur = fn
+        {:+, num} ->
+          recur(num)
           recur(num)
         num :: integer() ->
           num
@@ -743,7 +760,17 @@ defmodule Types.CheckerTest do
           recur(num)
         num :: integer() ->
           num
-      end) |> format() == "({:+, a} -> :ok; integer() -> integer()) when a: integer() | {:+, a}"
+      end) |> format() == "({:+, integer()} -> :ok; integer() -> integer())"
+
+      # Disjoint variables
+      assert {:error, _, _} =
+             quoted_of(recur = fn
+               {:+, num} ->
+                 (fn x :: atom() -> x end).(num)
+                 recur(num)
+               num :: integer() ->
+                 num
+             end)
     end
   end
 end
