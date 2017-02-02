@@ -205,6 +205,16 @@ defmodule Types.CheckerTest do
         (fn y :: boolean() -> y end).(x)
       end) |> format() == "(a -> a) when a: false | true"
 
+      assert quoted_of(fn x ->
+        (fn y :: boolean() -> y end).(x)
+        (fn true -> true; false -> false end).(x)
+      end) |> format() == "(false | true -> false | true)"
+
+      assert quoted_of(fn x ->
+        (fn y :: boolean() -> y end).(x)
+        (fn y :: boolean() -> y end).(x)
+      end) |> format() == "(a -> a) when a: false | true"
+
       assert quoted_of(fn x :: boolean() ->
         (fn y -> y end).(x)
       end) |> format() == "(a -> a) when a: false | true"
@@ -753,6 +763,14 @@ defmodule Types.CheckerTest do
           num
       end) |> format() == "({:+, a} -> :ok; integer() -> integer()) when a: integer() | {:+, a}"
 
+      # Invert free variables ordering
+      assert quoted_of(recur = fn
+        num :: integer() ->
+          num
+        {:+, num} ->
+          recur(num)
+      end) |> format() == "(integer() -> integer(); {:+, a} -> :ok) when a: integer() | {:+, a}"
+
       # Superset variables
       assert quoted_of(recur = fn
         {:+, num} ->
@@ -771,6 +789,17 @@ defmodule Types.CheckerTest do
                num :: integer() ->
                  num
              end)
+    end
+
+    test "multiple variables recursive tuples" do
+      # Multiple variables
+      assert quoted_of(recur = fn
+        {:+, left, right} ->
+          {:+, recur(left), recur(right)}
+        num :: integer() ->
+          num
+      end) |> format() == "({:+, a, b} -> {:+, :ok, :ok}; integer() -> integer()) " <>
+                          "when a: integer() | {:+, a, b}, b: integer() | {:+, a, b}"
     end
   end
 end

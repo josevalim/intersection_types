@@ -96,18 +96,21 @@ defmodule Types.Checker do
 
   defp unify_each({:var, _, key1}, {:var, _, key2} = right, keep, vars, type_vars, acc_vars) do
     case {Map.get(vars, key1, []), Map.get(vars, key2, [])} do
-      {[], _} ->
+      {[], right_value} ->
         type_vars =
           type_vars
+          |> Map.put(key2, right_value)
           |> Map.update(key1, [right], &Union.union(&1, [right]))
         acc_vars =
           acc_vars
-          |> Map.put(key2, Map.get(type_vars, key2, []))
+          |> Map.put(key2, right_value)
           |> Map.update(key1, [right], &Union.union(&1, [right]))
         {:match, type_vars, acc_vars}
+
       {[{:var, _, ^key2}], []} ->
         {:match, type_vars, acc_vars}
-      {left_value, []} ->
+
+      {left_value, right_value} when right_value == [] when right_value == left_value ->
         type_vars =
           type_vars
           |> Map.update(key2, left_value, &Union.union(&1, left_value))
@@ -117,6 +120,7 @@ defmodule Types.Checker do
           |> Map.update(key2, left_value, &Union.union(&1, left_value))
           |> Map.update(key1, [right], &Union.union(&1 -- left_value, [right]))
         {:match, type_vars, acc_vars}
+
       {left_value, right_value} ->
         with {_, [_ | _] = match, type_vars, acc_vars} <-
                unify(left_value, right_value, keep, vars, type_vars, acc_vars) do
@@ -596,7 +600,7 @@ defmodule Types.Checker do
   defp of_fn_apply(clauses, fn_inferred, meta, [arg_types], inferred) do
     inferred = Map.merge(inferred, fn_inferred)
 
-    case of_fn_apply_each(clauses, fn_inferred, arg_types, inferred, arg_types, inferred, []) do
+    case of_fn_apply_each(clauses, fn_inferred, arg_types, inferred, arg_types, %{}, []) do
       {:ok, acc_inferred, acc_body} ->
         {:ok, acc_inferred, acc_body}
       {:error, pending} ->
@@ -606,25 +610,37 @@ defmodule Types.Checker do
 
   # If we have matched all arguments and we haven't inferred anything new,
   # it means they are literals and there is no need for an exhaustive search.
-  defp of_fn_apply_each(_clauses, _fn_inferred, _arg, inferred, [], inferred, acc_body) do
+  defp of_fn_apply_each(_clauses, _fn_inferred, _arg, inferred, [], new_inferred, acc_body)
+       when new_inferred == %{} do
     {:ok, inferred, acc_body}
   end
   defp of_fn_apply_each([{[head], body} | clauses], fn_inferred,
                         arg, inferred, acc_arg, acc_inferred, acc_body) do
-    with {_, [_ | _] = matched, _, acc_inferred} <-
-           unify(head, arg, fn_inferred, inferred, acc_inferred) do
+    with {_, [_ | _] = matched, _, new_inferred} <-
+           unify(head, arg, fn_inferred, inferred, %{}) do
       acc_body = Union.union(acc_body, body)
+      acc_inferred = of_fn_apply_keep(new_inferred, acc_inferred)
       of_fn_apply_each(clauses, fn_inferred, arg, inferred, acc_arg -- matched, acc_inferred, acc_body)
     else
       _ ->
         of_fn_apply_each(clauses, fn_inferred, arg, inferred, acc_arg, acc_inferred, acc_body)
     end
   end
-  defp of_fn_apply_each([], _fn_inferred, _arg, _inferred, [], acc_inferred, acc_body) do
-    {:ok, acc_inferred, acc_body}
+  defp of_fn_apply_each([], _fn_inferred, _arg, inferred, [], acc_inferred, acc_body) do
+    {:ok, Map.merge(inferred, acc_inferred), acc_body}
   end
   defp of_fn_apply_each([], _fn_inferred, _arg, _inferred, pending, _acc_inferred, _acc_body) do
     {:error, pending}
+  end
+
+  defp of_fn_apply_keep(new_inferred, acc_inferred) do
+    Enum.reduce(new_inferred, acc_inferred, fn
+      # TODO: This deletion will cause trouble with multiple arguments.
+      # It is likely we need to generate a fake variable that points to
+      # k instead.
+      {k, []}, acc -> Map.delete(acc, k)
+      {k, v}, acc  -> Map.update(acc, k, v, &Union.union(&1, v))
+    end)
   end
 
   ## Matching
@@ -788,12 +804,12 @@ defmodule Types.Checker do
   defp of_recur([{_, %{rec: []}} = clause_state | clauses_state], clauses, inferred, acc) do
     of_recur(clauses_state, clauses, inferred, [clause_state | acc])
   end
-  defp of_recur([{clause, %{rec: recs} = state} | clauses_state],
+  defp of_recur([{clause, %{rec: recs, inferred: clause_inferred} = state} | clauses_state],
                 clauses, inferred, acc) do
-    case of_recur_rec(recs, clauses, inferred) do
+    case of_recur_rec(:lists.reverse(recs), clauses, clause_inferred, inferred) do
       {:ok, clause_inferred} ->
-        state = update_in state.inferred, &of_recur_keep(&1, clause_inferred)
-        of_recur(clauses_state, clauses, inferred, [{clause, state} | acc])
+        of_recur(clauses_state, clauses, inferred,
+                 [{clause, %{state | inferred: clause_inferred}} | acc])
       {:error, _, _} = error ->
         error
     end
@@ -807,19 +823,26 @@ defmodule Types.Checker do
     {:ok, clauses, inferred}
   end
 
-  defp of_recur_keep(original, inferred) do
-    for {k, _} <- original,
-        do: {k, Map.fetch!(inferred, k)},
-        into: %{}
+  defp of_recur_keep(inferred, clause_inferred, acc_inferred) do
+    Enum.reduce(clause_inferred, {%{}, acc_inferred}, fn {k, _}, {clause_inferred, acc_inferred} ->
+      v = Map.fetch!(inferred, k)
+      {Map.put(clause_inferred, k, v), Map.put(acc_inferred, k, v)}
+    end)
   end
 
-  defp of_recur_rec([{args, meta, _ret} | recs], clauses, inferred) do
-    with {:ok, after_inferred, _return} <- of_fn_apply(clauses, inferred, meta, args, inferred) do
-      of_recur_rec(recs, clauses, after_inferred)
+  defp of_recur_rec([{args, meta, _ret} | recs], clauses, clause_inferred, acc_inferred) do
+    with {:ok, inferred, _return} <- of_fn_apply(clauses, clause_inferred, meta, args, acc_inferred) do
+      # One every invocation, we only keep the variables that matters
+      # for the current clause. That's because acc_inferred has all of
+      # the variables but we don't the binding of when applying this
+      # clause to affect other clauses. This is solved on regular apply
+      # by generalization, which we could also have used here.
+      {clause_inferred, acc_inferred} = of_recur_keep(inferred, clause_inferred, acc_inferred)
+      of_recur_rec(recs, clauses, clause_inferred, acc_inferred)
     end
   end
-  defp of_recur_rec([], _original, inferred) do
-    {:ok, inferred}
+  defp of_recur_rec([], _original, clause_inferred, _inferred) do
+    {:ok, clause_inferred}
   end
 
   ## Blocks
