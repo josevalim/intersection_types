@@ -648,6 +648,9 @@ defmodule Types.CheckerTest do
 
       assert {:error, _, {:recursive_fn, _, _, _}} =
              quoted_of(fn x -> x.(x) end)
+
+      assert {:error, _, {:recursive_fn, _, _, _}} =
+             quoted_of(fn y -> x = y; x.(x) end)
     end
 
     test "bindings" do
@@ -800,6 +803,17 @@ defmodule Types.CheckerTest do
           num
       end) |> format() == "({:+, a, b} -> {:+, :ok, :ok}; integer() -> integer()) " <>
                           "when a: integer() | {:+, a, b}, b: integer() | {:+, a, b}"
+
+      # Multiple variables over multiple clauses
+      assert quoted_of(recur = fn
+        {:+, num} ->
+          {:+, recur(num)}
+        {:-, num} ->
+          {:-, recur(num)}
+        num :: integer() ->
+          num
+      end) |> format() == "({:+, a} -> {:+, :ok}; {:-, b} -> {:-, :ok}; integer() -> integer()) " <>
+                          "when a: integer() | {:+, a} | {:-, b}, b: integer() | {:+, a} | {:-, b}"
     end
   end
 end
