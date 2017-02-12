@@ -398,9 +398,18 @@ defmodule Types.Checker do
   defp of({name, meta, args}, state) when is_list(args) do
     if name == :recur do
       with {:ok, args, _arity, state} <- args(args, state, &of/2) do
-        %{rec: rec} = state
-        state = %{state | rec: [{args, meta, :ret} | rec]}
-        ok([{:atom, :ok}], state)
+        %{rec: rec, counter: counter, inferred: inferred, levels: levels, level: level} = state
+        case Map.fetch(rec, args) do
+          {:ok, {_meta, return}} ->
+            ok(return, state)
+          :error ->
+            return = [{:var, {:recur, Elixir}, counter}]
+            state = %{state | inferred: Map.put(inferred, counter, []),
+                              counter: counter + 1,
+                              levels: Map.put(levels, counter, {level, [], []}),
+                              rec: Map.put(rec, args, {meta, return})}
+            ok(return, state)
+        end
       end
     else
       raise "only recur is supported"
@@ -781,11 +790,6 @@ defmodule Types.Checker do
 
   defp of_def([clause | clauses], acc_clauses, acc_inferred, acc_state) do
     with {:ok, head, body, clause_state} <- of_fn_clause(clause, acc_state) do
-
-      # {clause, clause_inferred, state_inferred} = of_fn_expand(head, body, clause_state)
-      # acc_inferred = Map.merge(acc_inferred, clause_inferred)
-      # acc_state = %{replace_vars(clause_state, state) | inferred: state_inferred, rec: []}
-
       %{inferred: clause_inferred, counter: counter} = clause_state
       acc_state = %{acc_state | counter: counter}
       acc_inferred = Map.merge(acc_inferred, clause_inferred)
@@ -801,15 +805,16 @@ defmodule Types.Checker do
     of_recur(clauses_state, clauses, clause_inferred, [])
   end
 
-  defp of_recur([{_, %{rec: []}} = clause_state | clauses_state], clauses, inferred, acc) do
+  defp of_recur([{_, %{rec: rec}} = clause_state | clauses_state],
+                clauses, inferred, acc) when rec == %{} do
     of_recur(clauses_state, clauses, inferred, [clause_state | acc])
   end
   defp of_recur([{clause, %{rec: recs, inferred: clause_inferred} = state} | clauses_state],
                 clauses, inferred, acc) do
-    case of_recur_rec(:lists.reverse(recs), clauses, clause_inferred, inferred) do
+    case of_recur_rec(Map.to_list(recs), clauses, clause_inferred, inferred) do
       {:ok, clause_inferred} ->
         of_recur(clauses_state, clauses, inferred,
-                 [{clause, %{state | inferred: clause_inferred}} | acc])
+                 [{clause, %{state | inferred: Map.merge(inferred, clause_inferred)}} | acc])
       {:error, _, _} = error ->
         error
     end
@@ -830,15 +835,21 @@ defmodule Types.Checker do
     end)
   end
 
-  defp of_recur_rec([{args, meta, _ret} | recs], clauses, clause_inferred, acc_inferred) do
-    with {:ok, inferred, _return} <- of_fn_apply(clauses, clause_inferred, meta, args, acc_inferred) do
-      # One every invocation, we only keep the variables that matters
-      # for the current clause. That's because acc_inferred has all of
-      # the variables but we don't the binding of when applying this
-      # clause to affect other clauses. This is solved on regular apply
-      # by generalization, which we could also have used here.
-      {clause_inferred, acc_inferred} = of_recur_keep(inferred, clause_inferred, acc_inferred)
-      of_recur_rec(recs, clauses, clause_inferred, acc_inferred)
+  defp of_recur_rec([{args, {meta, left_return}} | recs], clauses, clause_inferred, acc_inferred) do
+    with {:ok, inferred, right_return} <-
+           of_fn_apply(clauses, clause_inferred, meta, args, acc_inferred) do
+      case unify(left_return, right_return, clause_inferred, inferred, inferred) do
+        {:match, _, _, inferred} ->
+          # One every invocation, we only keep the variables that matters
+          # for the current clause. That's because acc_inferred has all of
+          # the variables but we don't want the binding of one clause to
+          # affect the others. This is solved on regular apply by generalization,
+          # which we could also have used here.
+          {clause_inferred, acc_inferred} = of_recur_keep(inferred, clause_inferred, acc_inferred)
+          of_recur_rec(recs, clauses, clause_inferred, acc_inferred)
+        _ ->
+          error(meta, {:recur_return, left_return, right_return})
+      end
     end
   end
   defp of_recur_rec([], _original, clause_inferred, _inferred) do
@@ -1029,7 +1040,7 @@ defmodule Types.Checker do
   # The :levels map keeps the variable level as well as all related level variables
   # The :rec keeps all recursive calls that must be resolved later
   @state %{counter: 0, level: 0, match: %{}, vars: %{}, inferred: %{},
-           levels: %{}, rec: []}
+           levels: %{}, rec: %{}}
 
   defp state do
     @state

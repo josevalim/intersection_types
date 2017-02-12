@@ -101,7 +101,7 @@ defmodule Types do
 
     * What are principal typings and what are they good for? (Trevor Jim)
       This paper describes rank 2 intersection type systems. Elixir
-      implements a subset of the polar type system where intersections
+      implements a restricted rank 2 intersection types where intersections
       can only be expressed as independent function clauses. This means
       we can't infer the type for `x.(x)`, as it has the type `(a ^ (a -> b))`
       which is the intersection between a type variable and a function.
@@ -110,6 +110,7 @@ defmodule Types do
       which has dependency between clauses. However, for expressions
       such as `{x.(:foo), x.(:bar)}`, we infer the proper intersection
       type `(:bar -> a) ^ (:foo -> b)` expressed as `(:bar -> a; :foo -> b)`.
+      The recursive typing rules are also taken from this paper.
 
   ### Erlang papers
 

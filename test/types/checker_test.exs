@@ -755,7 +755,7 @@ defmodule Types.CheckerTest do
           recur(num)
         num :: integer() ->
           num
-      end) |> format() == "({:+, a} -> :ok; integer() -> integer()) when a: integer() | {:+, a}"
+      end) |> format() == "({:+, a} -> integer(); integer() -> integer()) when a: integer() | {:+, a}"
 
       # Free variables idempotency
       assert quoted_of(recur = fn
@@ -764,7 +764,7 @@ defmodule Types.CheckerTest do
           recur(num)
         num :: integer() ->
           num
-      end) |> format() == "({:+, a} -> :ok; integer() -> integer()) when a: integer() | {:+, a}"
+      end) |> format() == "({:+, a} -> integer(); integer() -> integer()) when a: integer() | {:+, a}"
 
       # Invert free variables ordering
       assert quoted_of(recur = fn
@@ -772,7 +772,7 @@ defmodule Types.CheckerTest do
           num
         {:+, num} ->
           recur(num)
-      end) |> format() == "(integer() -> integer(); {:+, a} -> :ok) when a: integer() | {:+, a}"
+      end) |> format() == "(integer() -> integer(); {:+, a} -> integer()) when a: integer() | {:+, a}"
 
       # Superset variables
       assert quoted_of(recur = fn
@@ -781,14 +781,23 @@ defmodule Types.CheckerTest do
           recur(num)
         num :: integer() ->
           num
-      end) |> format() == "({:+, integer()} -> :ok; integer() -> integer())"
+      end) |> format() == "({:+, integer()} -> integer(); integer() -> integer())"
 
-      # Disjoint variables
+      # Disjoint input
       assert {:error, _, _} =
              quoted_of(recur = fn
                {:+, num} ->
                  (fn x :: atom() -> x end).(num)
                  recur(num)
+               num :: integer() ->
+                 num
+             end)
+
+      # Disjoint output
+      assert {:error, _, _} =
+             quoted_of(recur = fn
+               {:+, num} ->
+                 (fn x :: atom() -> x end).(recur(num))
                num :: integer() ->
                  num
              end)
@@ -801,8 +810,9 @@ defmodule Types.CheckerTest do
           {:+, recur(left), recur(right)}
         num :: integer() ->
           num
-      end) |> format() == "({:+, a, b} -> {:+, :ok, :ok}; integer() -> integer()) " <>
-                          "when a: integer() | {:+, a, b}, b: integer() | {:+, a, b}"
+      end) |> format() == "({:+, a, b} -> {:+, c, d}; integer() -> integer()) " <>
+                          "when a: integer() | {:+, a, b}, b: integer() | {:+, a, b}, " <>
+                               "c: integer() | {:+, c, d}, d: integer() | {:+, c, d}"
 
       # Multiple variables over multiple clauses
       assert quoted_of(recur = fn
@@ -812,8 +822,9 @@ defmodule Types.CheckerTest do
           {:-, recur(num)}
         num :: integer() ->
           num
-      end) |> format() == "({:+, a} -> {:+, :ok}; {:-, b} -> {:-, :ok}; integer() -> integer()) " <>
-                          "when a: integer() | {:+, a} | {:-, b}, b: integer() | {:+, a} | {:-, b}"
+      end) |> format() == "({:+, a} -> {:+, b}; {:-, c} -> {:-, d}; integer() -> integer()) " <>
+                          "when a: integer() | {:+, a} | {:-, c}, b: integer() | {:+, b} | {:-, d}, " <>
+                               "c: integer() | {:+, a} | {:-, c}, d: integer() | {:+, b} | {:-, d}"
     end
   end
 end
