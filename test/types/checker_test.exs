@@ -306,6 +306,17 @@ defmodule Types.CheckerTest do
       end) |> format() == "(atom() -> :bar | :baz)"
     end
 
+    # TODO: Make this pass. See notes in union.ex.
+    # test "apply with inference on same vars" do
+    #   assert quoted_of(fn {a :: integer(), b :: atom()} ->
+    #     (fn {x, x} -> x end).({a, b})
+    #   end) |> format() == "({a, a} -> a)"
+    #
+    #   assert quoted_of(fn {a :: integer(), b :: atom()} ->
+    #     (fn {x, x} -> {x, x}; {x, y} -> {x, y} end).({a, b})
+    #   end) |> format() == "({a, a} -> a)"
+    # end
+
     # Although intersection types do not require let polymorphism,
     # we implement them to avoid having to rearrange ASTs into let
     # formats. Papers such as "Let should not be generalized" argue
@@ -545,6 +556,11 @@ defmodule Types.CheckerTest do
              quoted_of(fn {x :: integer(), x :: boolean()} -> x end)
     end
 
+    # TODO: Handle duplicate clauses.
+    # test "duplicate clauses" do
+    #   assert quoted_of(fn 0 -> 0; 1 -> 1 end) |> format() == (integer() -> integer())
+    # end
+
     test "late propagation" do
       assert quoted_of(fn x ->
         z = x
@@ -619,29 +635,15 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn x -> {x.(:foo).(:baz), x.(:bar).(:bat)} end) |> format() ==
              "((:foo -> (:baz -> a); :bar -> (:bat -> b)) -> {a, b})"
 
-      # TODO: Reintroduce those when we have multiple arguments.
-      # assert quoted_of(fn x ->
-      #   fn y, z ->
-      #     w2 = x.(z, :bar)
-      #     w1 = x.(:foo, y)
-      #     x.(w1, w2)
-      #   end
-      # end) |> format() == (z, :bar -> :bar | y; :foo, y -> z | :foo)
+      assert quoted_of(fn x ->
+        z = (fn z :: atom() -> z end).(:bar)
+        {x.(:foo), x.(z)}
+      end) |> format() == "((:foo -> a; :bar -> b) -> {a, b})"
 
-      # assert quoted_of(fn x ->
-      #   z = (fn z :: atom() -> z end).(:bar)
-      #   {x.(z), x.(z)}
-      # end) |> format() == "((atom() -> a) -> {a, a})"
-
-      # assert quoted_of(fn x ->
-      #   z = (fn z :: atom() -> z end).(:bar)
-      #   {x.(:foo), x.(z)}
-      # end) |> format() == "((:foo -> a; atom() -> b) -> {a, b})"
-
-      # assert quoted_of(fn x ->
-      #   z = (fn z :: atom() -> z end).(:bar)
-      #   {x.(z), x.(:foo)}
-      # end) |> format() == "((:foo -> a; atom() -> b) -> {b, a})"
+      assert quoted_of(fn x ->
+        z = (fn z :: atom() -> z end).(:bar)
+        {x.(z), x.(:foo)}
+      end) |> format() == "((:bar -> a; :foo -> b) -> {a, b})"
 
       assert {:error, _, {:occurs, _, _, _, _}} =
              quoted_of(fn x -> fn y -> {x.(y), y.(x)} end end)

@@ -25,6 +25,36 @@ defmodule Types.Union do
   #   ast_to_types
   #
 
+  # TODO
+  #
+  # ## Function type parsing.
+  #
+  # Variables in functions apply to the most outer level the
+  # variable exists. Variables on the right side must appear
+  # on the left side before.
+  #
+  # ## Function code parsing.
+  #
+  # What is the type of:
+  #
+  #     def same?(a, a), do: true
+  #     def same?(_a, _b), do: false
+  #
+  # Note it is not (a, a -> true; a, b -> false) because variables
+  # in types talk about types inhabitation. For example, the values
+  # 0 and 1 will match (a, a -> true) because they are both integers.
+  #
+  # Also note that, when applying to same?(x, y), there is no way
+  # we can infer x and y are of the same type, especially because
+  # the second clause will give them the distinct and generic types
+  # a and b.
+  #
+  # So it feels that, in this situation, the user needs to give the
+  # function an overall type that is checked against each clause or
+  # we need to explicitly tag the args for the first clause. This
+  # condition seems to be generalized to whenever the same type
+  # variable appears more than once in an argument position.
+
   alias Inspect.Algebra, as: A
 
   @doc """
