@@ -309,12 +309,16 @@ defmodule Types.CheckerTest do
     # TODO: Make this pass. See notes in union.ex.
     # test "apply with inference on same vars" do
     #   assert quoted_of(fn {a :: integer(), b :: atom()} ->
+    #     (fn {x, y} -> {x, y} end).({a, b})
+    #   end) |> format() == ""
+    #
+    #   assert quoted_of(fn {a :: integer(), b :: atom()} ->
     #     (fn {x, x} -> x end).({a, b})
-    #   end) |> format() == "({a, a} -> a)"
+    #   end) |> format() == ""
     #
     #   assert quoted_of(fn {a :: integer(), b :: atom()} ->
     #     (fn {x, x} -> {x, x}; {x, y} -> {x, y} end).({a, b})
-    #   end) |> format() == "({a, a} -> a)"
+    #   end) |> format() == ""
     # end
 
     # Although intersection types do not require let polymorphism,
