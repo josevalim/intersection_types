@@ -182,37 +182,53 @@ defmodule Types.Union do
     {:ok, [:empty_list]}
   end
   def ast_to_types({:cons, _, [left, right]}) do
-    with {:ok, left} <- ast_to_types(left),
-         {:ok, right} <- ast_to_types(right) do
-      {:ok, [{:cons, left, right}]}
-    end
+    permute_args([left, right], fn [left, right], _arity ->
+      {:cons, [left], [right]}
+    end)
   end
   def ast_to_types(value) when is_atom(value) do
     {:ok, [{:atom, value}]}
   end
   def ast_to_types({left, right}) do
-    with {:ok, left} <- ast_to_types(left),
-         {:ok, right} <- ast_to_types(right) do
-      {:ok, [{:tuple, [left, right], 2}]}
-    end
+    permute_args([left, right], fn args, arity ->
+      {:tuple, Enum.map(args, &List.wrap/1), arity}
+    end)
   end
   def ast_to_types({:{}, _, args}) do
-    with {:ok, args, arity} <- args_ast_to_types(args, [], 0) do
-      {:ok, [{:tuple, args, arity}]}
-    end
+    permute_args(args, fn args, arity ->
+      {:tuple, Enum.map(args, &List.wrap/1), arity}
+    end)
   end
   def ast_to_types(other) do
     {:error, {:invalid_type, other}}
   end
 
-  defp args_ast_to_types([arg | args], acc, arity) do
-    case ast_to_types(arg) do
-      {:ok, arg} -> args_ast_to_types(args, [arg | acc], arity + 1)
-      {:error, _} = error -> error
+  defp permute_args(args, callback) do
+    args_to_types(args, [], 0, callback)
+  end
+
+  defp args_to_types([arg | args], acc, arity, callback) do
+    with {:ok, types} <- ast_to_types(arg) do
+      args_to_types(args, [types | acc], arity + 1, callback)
     end
   end
-  defp args_ast_to_types([], acc, arity) do
-    {:ok, :lists.reverse(acc), arity}
+  defp args_to_types([], acc, arity, callback) do
+    {:ok, permute_args(acc, [], arity, callback, [])}
+  end
+
+  defp permute_args([pivot | pivots], call, arity, callback, acc) do
+    permute_args(pivot, pivots, call, arity, callback, acc)
+  end
+  defp permute_args([], call, arity, callback, acc) do
+    [callback.(call, arity) | acc]
+  end
+
+  defp permute_args([arg | args], pivots, call, arity, callback, acc) do
+    acc = permute_args(pivots, [arg | call], arity, callback, acc)
+    permute_args(args, pivots, call, arity, callback, acc)
+  end
+  defp permute_args([], _pivots, _call, _arity, _callback, acc) do
+    acc
   end
 
   @doc """
@@ -432,7 +448,7 @@ defmodule Types.Union do
 
   By default, any union with more than one element is a supertype
   of its subsets. However, a union with one element can also be
-  a supertype if the element is a supertype. For example, `:atom`
+  a supertype if the element is a supertype. For example, `atom()`
   is a supertype of the values `:foo`, `:bar`, etc.
 
   In other words, for unions with one element, this function checks

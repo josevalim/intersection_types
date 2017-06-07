@@ -45,7 +45,10 @@ defmodule Types.UnionTest do
              [{:tuple, [[{:atom, :ok}], [:atom]], 2}]
 
       assert quoted_union({boolean(), boolean()}, {boolean(), boolean()}) ==
-             [{:tuple, [[{:atom, true}, {:atom, false}], [{:atom, true}, {:atom, false}]], 2}]
+             [{:tuple, [[atom: false], [atom: false]], 2},
+              {:tuple, [[atom: false], [atom: true]], 2},
+              {:tuple, [[atom: true], [atom: false]], 2},
+              {:tuple, [[atom: true], [atom: true]], 2}]
 
       assert quoted_union({:foo, :bar}, {atom(), atom()}) ==
              [{:tuple, [[:atom], [:atom]], 2}]
@@ -54,9 +57,9 @@ defmodule Types.UnionTest do
              [{:tuple, [[{:atom, :error}], [:integer]], 2},
               {:tuple, [[{:atom, :ok}], [:integer]], 2}]
 
-      assert quoted_union({atom() | integer(), atom()},
-                          {:foo, :bar}) ==
-             [{:tuple, [[:atom, :integer], [:atom]], 2}]
+      assert quoted_union({atom() | integer(), atom()}, {:foo, :bar}) ==
+             [{:tuple, [[:atom], [:atom]], 2},
+              {:tuple, [[:integer], [:atom]], 2}]
     end
   end
 
@@ -93,6 +96,16 @@ defmodule Types.UnionTest do
              [{:tuple, [], 0}]
       assert quoted_ast_to_types({:ok, atom()}) |> elem(1) ==
              [{:tuple, [[{:atom, :ok}], [:atom]], 2}]
+      assert quoted_ast_to_types({:a | :b, :one | :two}) |> elem(1) ==
+             [{:tuple, [[atom: :b], [atom: :two]], 2},
+              {:tuple, [[atom: :a], [atom: :two]], 2},
+              {:tuple, [[atom: :b], [atom: :one]], 2},
+              {:tuple, [[atom: :a], [atom: :one]], 2}]
+      assert quoted_ast_to_types({boolean(), boolean()}) |> elem(1) ==
+             [{:tuple, [[atom: false], [atom: false]], 2},
+              {:tuple, [[atom: true], [atom: false]], 2},
+              {:tuple, [[atom: false], [atom: true]], 2},
+              {:tuple, [[atom: true], [atom: true]], 2}]
     end
 
     test "empty_list and cons" do
@@ -101,6 +114,12 @@ defmodule Types.UnionTest do
 
       assert quoted_ast_to_types(cons(atom(), integer())) |> elem(1) ==
              [{:cons, [:atom], [:integer]}]
+
+      assert quoted_ast_to_types(cons(boolean(), boolean())) |> elem(1) ==
+             [{:cons, [{:atom, false}], [{:atom, false}]},
+              {:cons, [atom: true], [atom: false]},
+              {:cons, [atom: false], [atom: true]},
+              {:cons, [atom: true], [atom: true]}]
     end
   end
 end
