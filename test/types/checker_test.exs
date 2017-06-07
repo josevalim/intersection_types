@@ -29,53 +29,35 @@ defmodule Types.CheckerTest do
       assert Checker.unify([:atom], [:atom, :integer], %{}, %{}, %{}) ==
              {:disjoint, [:atom], %{}, %{}}
 
-      assert Checker.unify([{:tuple, [[:atom]], 1}], [{:tuple, [[:atom, :integer]], 1}], %{}, %{}, %{}) ==
-             {:disjoint, [], %{}, %{}}
+      assert Checker.unify([{:tuple, [:atom], 1}], [{:tuple, [:atom], 1}, {:tuple, [:integer], 1}], %{}, %{}, %{}) ==
+             {:disjoint, [{:tuple, [:atom], 1}], %{}, %{}}
     end
 
     test "tuple root unions" do
-      assert Checker.unify([{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
-                           [{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
+      assert Checker.unify([{:tuple, [{:var, {:x, Elixir}, 0}], 1}],
+                           [{:tuple, [:atom], 1}, {:tuple, [:integer], 1}],
                            %{}, %{}, %{}) ==
              {:match,
-              [{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
+              [{:tuple, [:atom], 1}, {:tuple, [:integer], 1}],
               %{0 => [:atom, :integer]},
               %{0 => [:atom, :integer]}}
 
-      assert Checker.unify([{:tuple, [[:atom]], 1}, {:tuple, [[:integer]], 1}],
-                           [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
+      assert Checker.unify([{:tuple, [:atom], 1}, {:tuple, [:integer], 1}],
+                           [{:tuple, [{:var, {:x, Elixir}, 0}], 1}],
                            %{}, %{}, %{}) ==
              {:match,
-              [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
-              %{0 => [:atom, :integer]},
-              %{0 => [:atom, :integer]}}
-    end
-
-    test "tuple args unions" do
-      assert Checker.unify([{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
-                           [{:tuple, [[:atom, :integer]], 1}],
-                           %{}, %{}, %{}) ==
-             {:match,
-              [{:tuple, [[:atom, :integer]], 1}],
-              %{0 => [:atom, :integer]},
-              %{0 => [:atom, :integer]}}
-
-      assert Checker.unify([{:tuple, [[:atom, :integer]], 1}],
-                           [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
-                           %{}, %{}, %{}) ==
-             {:match,
-              [{:tuple, [[{:var, {:x, Elixir}, 0}]], 1}],
+              [{:tuple, [{:var, {:x, Elixir}, 0}], 1}],
               %{0 => [:atom, :integer]},
               %{0 => [:atom, :integer]}}
     end
 
     test "either" do
       # This pattern accepts different types across left and right.
-      pattern = [{:tuple, [[{:atom, :left}], [{:var, {:x, nil}, 0}]], 2},
-                 {:tuple, [[{:atom, :right}], [{:var, {:y, nil}, 1}]], 2}]
+      pattern = [{:tuple, [{:atom, :left}, {:var, {:x, nil}, 0}], 2},
+                 {:tuple, [{:atom, :right}, {:var, {:y, nil}, 1}], 2}]
 
-      left  = {:tuple, [[{:atom, :left}], [:atom]], 2}
-      right = {:tuple, [[{:atom, :right}], [:integer]], 2}
+      left  = {:tuple, [{:atom, :left}, :atom], 2}
+      right = {:tuple, [{:atom, :right}, :integer], 2}
 
       assert Checker.unify(pattern, [left, right], %{0 => [], 1 => []}, %{}, %{}) ==
              {:match, [left, right],
@@ -88,8 +70,8 @@ defmodule Types.CheckerTest do
               %{0 => [:atom], 1 => [:integer]}}
 
       # This pattern requires the same type across left and right.
-      pattern = [{:tuple, [[{:atom, :left}], [{:var, {:x, nil}, 0}]], 2},
-                 {:tuple, [[{:atom, :right}], [{:var, {:x, nil}, 0}]], 2}]
+      pattern = [{:tuple, [{:atom, :left}, {:var, {:x, nil}, 0}], 2},
+                 {:tuple, [{:atom, :right}, {:var, {:x, nil}, 0}], 2}]
 
       assert Checker.unify(pattern, [left, right], %{0 => [], 1 => []}, %{}, %{}) ==
              {:disjoint, [left], %{0 => [:atom]}, %{0 => [:atom]}}
@@ -281,14 +263,14 @@ defmodule Types.CheckerTest do
         b = (fn y -> y end).(x)
         c = x
         {a, b, c}
-      end) |> format() == "(a -> {false | nil | true, a, a})"
+      end) |> format() == "(a -> {false, a, a} | {nil, a, a} | {true, a, a})"
 
       assert quoted_of(fn x ->
         a = (fn true -> false; y -> y end).(x)
         b = (fn z -> z end).(x)
         c = x
         {a, b, c}
-      end) |> format() == "(a -> {false | a, a, a})"
+      end) |> format() == "(a -> {false, a, a} | {a, a, a})"
 
       assert quoted_of(fn x ->
         a = (fn true -> false; y -> y end).(x)
@@ -588,7 +570,7 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn z ->
         {x, y} = (fn true -> {true, :foo}; false -> {false, :bar} end).(z)
         {y, x}
-      end) |> format() == "(false | true -> {:bar | :foo, false | true})"
+      end) |> format() == "(false | true -> {:bar, false} | {:bar, true} | {:foo, false} | {:foo, true})"
     end
 
     test "free variables" do

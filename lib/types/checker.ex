@@ -157,9 +157,9 @@ defmodule Types.Checker do
     case unify_args([left1, right1], [left2, right2], keep, vars, type_vars, acc_vars) do
       {:match, _, type_vars, acc_vars} ->
         {:match, type_vars, acc_vars}
-      {:subset, [left, right], type_vars, acc_vars} ->
+      {:subset, [right, left], type_vars, acc_vars} ->
         {:subset, {:cons, left, right}, type_vars, acc_vars}
-      {:disjoint, _, _, _} ->
+      :disjoint ->
         :disjoint
     end
   end
@@ -171,7 +171,7 @@ defmodule Types.Checker do
         {:match, type_vars, acc_vars}
       {:subset, args, type_vars, acc_vars} ->
         {:subset, {:tuple, :lists.reverse(args), arity}, type_vars, acc_vars}
-      {:disjoint, _, _, _} ->
+      :disjoint ->
         :disjoint
     end
   end
@@ -231,7 +231,7 @@ defmodule Types.Checker do
     type_vars = Map.merge(type_vars, keep)
 
     with {:match, _, type_vars, acc_vars} <-
-           unify_args(left_head, right_head, keep, vars, type_vars, acc_vars),
+           unify_head(left_head, right_head, keep, vars, type_vars, acc_vars),
          right_body = bind(right_body, right_inferred, type_vars),
          {:match, _, type_vars, acc_vars} <-
            unify(left_body, right_body, keep, type_vars, type_vars, acc_vars) do
@@ -253,18 +253,37 @@ defmodule Types.Checker do
   defp unify_args(lefties, righties, keep, vars, type_vars, acc_vars) do
     unify_args(lefties, righties, keep, vars, type_vars, acc_vars, :match, [])
   end
-
   defp unify_args([left | lefties], [right | righties],
+                  keep, vars, type_vars, acc_vars, acc_kind, acc_matched) do
+    case unify_each(left, right, keep, vars, type_vars, acc_vars) do
+      {:match, type_vars, acc_vars} ->
+        unify_args(lefties, righties, keep, vars, type_vars, acc_vars,
+                   unify_min(:match, acc_kind), [right | acc_matched])
+      {:subset, subset, type_vars, acc_vars} ->
+        unify_args(lefties, righties, keep, vars, type_vars, acc_vars,
+                   unify_min(:subset, acc_kind), [subset | acc_matched])
+      :disjoint ->
+        :disjoint
+    end
+  end
+  defp unify_args([], [], _keep, _vars, type_vars, acc_vars, kind, acc_matched) do
+    {kind, acc_matched, type_vars, acc_vars}
+  end
+
+  defp unify_head(lefties, righties, keep, vars, type_vars, acc_vars) do
+    unify_head(lefties, righties, keep, vars, type_vars, acc_vars, :match, [])
+  end
+  defp unify_head([left | lefties], [right | righties],
                   keep, vars, type_vars, acc_vars, acc_kind, acc_matched) do
     case unify(left, right, keep, vars, type_vars, acc_vars) do
       {:disjoint, _, _, _} = disjoint ->
         disjoint
       {kind, matched, type_vars, acc_vars} ->
-        unify_args(lefties, righties, keep, vars, type_vars, acc_vars,
+        unify_head(lefties, righties, keep, vars, type_vars, acc_vars,
                    unify_min(kind, acc_kind), [matched | acc_matched])
     end
   end
-  defp unify_args([], [], _keep, _vars, type_vars, acc_vars, kind, acc_matched) do
+  defp unify_head([], [], _keep, _vars, type_vars, acc_vars, kind, acc_matched) do
     {kind, acc_matched, type_vars, acc_vars}
   end
 
@@ -566,7 +585,7 @@ defmodule Types.Checker do
                                 funs, args, recur, inferred, sum, acc_inferred) do
     with true <- var_recur in recur,
          {:match, _, _, acc_inferred} <-
-           unify_args(args, head, %{}, inferred, inferred, acc_inferred) do
+           unify_head(args, head, %{}, inferred, inferred, acc_inferred) do
       of_var_apply_unify_recur(clauses, funs, args, recur, inferred, Union.union(body, sum), acc_inferred)
     else
       _ -> of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
@@ -921,6 +940,7 @@ defmodule Types.Checker do
     of_pattern_each(ast, %{state | match: %{}})
   end
 
+  # TODO: Test :: permutes inside patterns inside tuples
   defp of_pattern_each({:::, meta, [{var, _, ctx}, ast]}, state)
        when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
     case Union.ast_to_types(ast) do
@@ -973,7 +993,6 @@ defmodule Types.Checker do
   defp literal(value, state, _fun) when is_integer(value) do
     ok([:integer], state)
   end
-
   defp literal(value, state, _fun) when is_atom(value) do
     ok([{:atom, value}], state)
   end
@@ -981,23 +1000,33 @@ defmodule Types.Checker do
     ok([:empty_list], state)
   end
   defp literal([{:|, _, [left, right]}], state, fun) do
-    with {:ok, [left, right], _, state} <- args([left, right], state, fun) do
-      ok([{:cons, left, right}], state)
+    with {:ok, args, arity, state} <- args([left, right], state, fun) do
+      types =
+        Union.permute_args(args, arity, fn [left, right], _arity ->
+          {:cons, left, right}
+        end)
+      ok(types, state)
     end
   end
   defp literal([left | right], state, fun) do
-    with {:ok, [left, right], _, state} <- args([left, right], state, fun) do
-      ok([{:cons, left, right}], state)
+    with {:ok, args, arity, state} <- args([left, right], state, fun) do
+      types =
+        Union.permute_args(args, arity, fn [left, right], _arity ->
+          {:cons, left, right}
+        end)
+      ok(types, state)
     end
   end
   defp literal({left, right}, state, fun) do
     with {:ok, args, arity, state} <- args([left, right], state, fun) do
-      ok([{:tuple, args, arity}], state)
+      types = Union.permute_args(args, arity, &{:tuple, &1, &2})
+      ok(types, state)
     end
   end
   defp literal({:{}, _, args}, state, fun) do
     with {:ok, args, arity, state} <- args(args, state, fun) do
-      ok([{:tuple, args, arity}], state)
+      types = Union.permute_args(args, arity, &{:tuple, &1, &2})
+      ok(types, state)
     end
   end
   defp literal(other, _state, _fun) do

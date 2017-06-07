@@ -96,7 +96,7 @@ defmodule Types.Union do
   defp types_to_algebra(types, state) do
     {types, state} =
       types
-      |> Enum.sort()
+      |> :lists.usort()
       |> Enum.map_reduce(state, &type_to_algebra/2)
     {A.group(A.fold_doc(types, &A.glue(A.concat(&1, " |"), &2))), state}
   end
@@ -133,14 +133,19 @@ defmodule Types.Union do
   defp type_to_algebra(:empty_list, state), do: {"empty_list()", state}
 
   defp args_to_algebra(args, state) do
-    {args, state} = Enum.map_reduce(args, state, &types_to_algebra/2)
+    {args, state} = Enum.map_reduce(args, state, &type_to_algebra/2)
     {A.fold_doc(args, &A.glue(A.concat(&1, ","), &2)), state}
+  end
+
+  defp head_to_algebra(head, state) do
+    {head, state} = Enum.map_reduce(head, state, &types_to_algebra/2)
+    {A.fold_doc(head, &A.glue(A.concat(&1, ","), &2)), state}
   end
 
   defp clauses_to_algebra(clauses, state) do
     {clauses, state} =
       Enum.map_reduce(clauses, state, fn {head, body}, state ->
-        {head, state} = args_to_algebra(head, state)
+        {head, state} = head_to_algebra(head, state)
         {body, state} = types_to_algebra(body, state)
         {A.nest(A.glue(A.concat(head, " ->"), body), 2), state}
       end)
@@ -182,45 +187,54 @@ defmodule Types.Union do
     {:ok, [:empty_list]}
   end
   def ast_to_types({:cons, _, [left, right]}) do
-    permute_args([left, right], fn [left, right], _arity ->
-      {:cons, [left], [right]}
+    permute_args_to_types([left, right], fn [left, right], _arity ->
+      {:cons, left, right}
     end)
   end
   def ast_to_types(value) when is_atom(value) do
     {:ok, [{:atom, value}]}
   end
   def ast_to_types({left, right}) do
-    permute_args([left, right], fn args, arity ->
-      {:tuple, Enum.map(args, &List.wrap/1), arity}
+    permute_args_to_types([left, right], fn args, arity ->
+      {:tuple, args, arity}
     end)
   end
   def ast_to_types({:{}, _, args}) do
-    permute_args(args, fn args, arity ->
-      {:tuple, Enum.map(args, &List.wrap/1), arity}
+    permute_args_to_types(args, fn args, arity ->
+      {:tuple, args, arity}
     end)
   end
   def ast_to_types(other) do
     {:error, {:invalid_type, other}}
   end
 
-  defp permute_args(args, callback) do
-    args_to_types(args, [], 0, callback)
+  defp permute_args_to_types(args, callback) do
+    permute_args_to_types(args, [], 0, callback)
   end
 
-  defp args_to_types([arg | args], acc, arity, callback) do
+  defp permute_args_to_types([arg | args], acc, arity, callback) do
     with {:ok, types} <- ast_to_types(arg) do
-      args_to_types(args, [types | acc], arity + 1, callback)
+      permute_args_to_types(args, [types | acc], arity + 1, callback)
     end
   end
-  defp args_to_types([], acc, arity, callback) do
-    {:ok, permute_args(acc, [], arity, callback, [])}
+  defp permute_args_to_types([], acc, arity, callback) do
+    {:ok, permute_args(:lists.reverse(acc), arity, callback)}
+  end
+
+  @doc """
+  Permutes the given arguments.
+
+  Calling the callback with each permutation and the arity.
+  """
+  def permute_args(args, arity, callback) do
+    permute_args(args, [], arity, callback, [])
   end
 
   defp permute_args([pivot | pivots], call, arity, callback, acc) do
     permute_args(pivot, pivots, call, arity, callback, acc)
   end
   defp permute_args([], call, arity, callback, acc) do
-    [callback.(call, arity) | acc]
+    [callback.(:lists.reverse(call), arity) | acc]
   end
 
   defp permute_args([arg | args], pivots, call, arity, callback, acc) do
@@ -259,8 +273,11 @@ defmodule Types.Union do
   defp traverse([{:cons, left, right} = type | types], acc, state, fun) do
     case fun.(type, state) do
       {:ok, state} ->
-        {[left, right], state} = traverse_args([left, right], state, fun)
-        traverse(types, [{:cons, left, right} | acc], state, fun)
+        {conses, state} =
+          traverse_and_permute([left, right], 2, state, fun, fn
+            [left, right], _ -> {:cons, left, right}
+          end)
+        traverse(types, conses ++ acc, state, fun)
       {:replace, type, state} ->
         traverse(types, [type | acc], state, fun)
     end
@@ -268,8 +285,8 @@ defmodule Types.Union do
   defp traverse([{:tuple, args, arity} = type | types], acc, state, fun) do
     case fun.(type, state) do
       {:ok, state} ->
-        {args, state} = traverse_args(args, state, fun)
-        traverse(types, [{:tuple, args, arity} | acc], state, fun)
+        {tuples, state} = traverse_and_permute(args, arity, state, fun, &{:tuple, &1, &2})
+        traverse(types, tuples ++ acc, state, fun)
       {:replace, type, state} ->
         traverse(types, [type | acc], state, fun)
     end
@@ -289,12 +306,35 @@ defmodule Types.Union do
     {:lists.reverse(acc), state}
   end
 
+  defp traverse_and_permute(args, arity, state, fun, callback) do
+    case traverse_with_equality_check(args, [], true, state, fun) do
+      {true, state} -> {[callback.(args, arity)], state}
+      {args, state} -> {permute_args(args, arity, callback), state}
+    end
+  end
+
+  defp traverse_with_equality_check([type | types], acc, all_equal?, state, fun) do
+    case traverse([type], [], state, fun) do
+      {[^type] = new, state} ->
+        traverse_with_equality_check(types, [new | acc], all_equal?, state, fun)
+      {new, state} ->
+        traverse_with_equality_check(types, [new | acc], false, state, fun)
+    end
+  end
+  defp traverse_with_equality_check([], _acc, true, state, _fun) do
+    {true, state}
+  end
+  defp traverse_with_equality_check([], acc, false, state, _fun) do
+    {:lists.reverse(acc), state}
+  end
+
   @doc """
   Traverses the given arguments.
 
   Same as `traverse/2` but goes through the list
   of arguments.
   """
+  # TODO: Review use of traverse_args
   def traverse_args(args, state, fun) do
     Enum.map_reduce(args, state, &traverse(&1, [], &2, fun))
   end
@@ -386,61 +426,28 @@ defmodule Types.Union do
 
   The same as `qualify/2` but for arguments.
   """
+  # TODO: Review use of qualify_args
   def qualify_args(left, right) do
     qualify_args(left, right, %{}, %{}, :equal) |> elem(0)
   end
 
   defp qualify_args([left | lefties], [right | righties], lvars, rvars, :equal) do
-    case qualify_look_ahead(:lists.sort(left), :lists.sort(right), lvars, rvars) do
-      {:equal, lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, :equal)
-      {kind, lvars, rvars} -> qualify_args([left | lefties], [right | righties], lvars, rvars, kind)
+    case qualify(left, right, lvars, rvars) do
+      {:disjoint, lvars, rvars} -> {:disjoint, lvars, rvars}
+      {kind, lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, kind)
     end
   end
-  defp qualify_args([left | lefties], [right | righties], lvars, rvars, :superset) do
-    case qualify_set(left, right, lvars, rvars, :superset) do
-      {lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, :superset)
-      :error -> {:disjoint, lvars, rvars}
+
+  defp qualify_args([left | lefties], [right | righties], lvars, rvars, kind) do
+    case qualify(left, right, lvars, rvars) do
+      {^kind, lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, kind)
+      {:equal, lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, kind)
+      {_, lvars, rvars} -> {:disjoint, lvars, rvars}
     end
   end
-  defp qualify_args([left | lefties], [right | righties], lvars, rvars, :subset) do
-    case qualify_set(left, right, lvars, rvars, :subset) do
-      {lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, :subset)
-      :error -> {:disjoint, lvars, rvars}
-    end
-  end
-  defp qualify_args(_, _, lvars, rvars, :disjoint) do
-    {:disjoint, lvars, rvars}
-  end
+
   defp qualify_args([], [], lvars, rvars, kind) do
     {kind, lvars, rvars}
-  end
-
-  defp qualify_look_ahead([left | lefties], [right | righties], lvars, rvars) do
-    case qualify(left, right, lvars, rvars) do
-      {:equal, lvars, rvars} -> qualify_look_ahead(lefties, righties, lvars, rvars)
-      {kind, lvars, rvars} -> {kind, lvars, rvars}
-    end
-  end
-  defp qualify_look_ahead([], [], lvars, rvars), do: {:equal, lvars, rvars}
-  defp qualify_look_ahead([], _, lvars, rvars), do: {:subset, lvars, rvars}
-  defp qualify_look_ahead(_, [], lvars, rvars), do: {:superset, lvars, rvars}
-
-  defp qualify_set(lefties, [right | righties], lvars, rvars, kind) do
-    qualify_set(lefties, right, lefties, righties, lvars, rvars, kind)
-  end
-  defp qualify_set(_lefties, [], lvars, rvars, _kind) do
-    {lvars, rvars}
-  end
-
-  defp qualify_set([type | types], right, lefties, righties, lvars, rvars, kind) do
-    case qualify(type, right, lvars, rvars) do
-      {^kind, lvars, rvars} -> qualify_set(lefties, righties, lvars, rvars, kind)
-      {:equal, lvars, rvars} -> qualify_set(lefties, righties, lvars, rvars, kind)
-      {_, _} -> qualify_set(types, right, lefties, righties, lvars, rvars, kind)
-    end
-  end
-  defp qualify_set([], _right, _lefties, _righties, _lvars, _rvars, _kind) do
-    :error
   end
 
   @doc """
@@ -459,10 +466,10 @@ defmodule Types.Union do
   def supertype?(types) when is_list(types), do: true
 
   defp each_supertype?({:cons, left, right}) do
-    supertype?(left) or supertype?(right)
+    each_supertype?(left) or each_supertype?(right)
   end
   defp each_supertype?({:tuple, args, _}) do
-    Enum.any?(args, &supertype?/1)
+    Enum.any?(args, &each_supertype?/1)
   end
   defp each_supertype?({:fn, clauses, _, _}) do
     Enum.any?(clauses, fn {head, body} ->
@@ -479,10 +486,10 @@ defmodule Types.Union do
   def recursive?(types, key), do: Enum.any?(types, &each_recursive?(&1, key))
 
   defp each_recursive?({:cons, left, right}, key) do
-    recursive?(left, key) or recursive?(right, key)
+    each_recursive?(left, key) or each_recursive?(right, key)
   end
   defp each_recursive?({:tuple, args, _}, key) do
-    Enum.any?(args, &recursive?(&1, key))
+    Enum.any?(args, &each_recursive?(&1, key))
   end
   defp each_recursive?({:fn, clauses, _, _}, key) do
     Enum.any?(clauses, fn {head, body} ->
