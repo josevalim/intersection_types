@@ -86,7 +86,7 @@ defmodule Types.CheckerTest do
       assert {:disjoint, _, _, _} = Checker.unify(fn2, fn1, %{}, %{}, %{})
 
       fn1 = [{:fn, [{[[:atom]], [{:var, {:x, nil}, 0}]},
-                    {[[:integer]], [{:var, {:x, nil}, 0}],}], %{0 => []}, 1}]
+                    {[[:integer]], [{:var, {:x, nil}, 0}]}], %{0 => []}, 1}]
       fn2 = [{:fn, [{[[:atom]], [:atom]},
                     {[[:integer]], [:integer]}], %{}, 1}]
       assert {:match, _, _, %{0 => [:atom, :integer]}} = Checker.unify(fn1, fn2, %{}, %{}, %{})
@@ -453,6 +453,23 @@ defmodule Types.CheckerTest do
       ) |> format() == "{:baz, :bat}"
     end
 
+    test "apply on intersections with composite types" do
+      assert quoted_of((fn x ->
+          x.(true)
+        end).(fn x :: boolean() -> :ok end)
+      ) |> format() == ":ok"
+
+      assert quoted_of((fn x ->
+          {x.({:ok, true}), x.({:ok, false}), x.({:error, true}), x.({:error, false})}
+        end).(fn {:ok, x :: boolean()} -> x; {:error, _ :: boolean()} -> :error end)
+      ) |> format() == "{true, false, :error, :error}"
+
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+             quoted_of((fn x ->
+                {x.({:ok, true}), x.({:error, false})}
+              end).(fn {:ok, x :: boolean()} -> x end))
+    end
+
     test "apply with lazy inference" do
       # Binding are lazy (z is true and not true | false)
       assert quoted_of(fn z ->
@@ -535,6 +552,9 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn {x :: integer(), x :: integer()} -> x end) |> format() ==
              "({integer(), integer()} -> integer())"
 
+      assert quoted_of(fn {:ok, x :: boolean()} -> x end) |> format() ==
+             "({:ok, a} -> a) when a: false | true"
+
       assert {:error, _, {:bound_var, _, _, _}} =
              quoted_of(fn {x, x :: boolean()} -> x end)
 
@@ -600,6 +620,9 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn x -> {x.(:foo), x.(:foo)} end) |> format() ==
              "((:foo -> a) -> {a, a})"
 
+      assert quoted_of(fn x -> {x.(x.(:foo)), x.(x.(:bar))} end) |> format() ==
+             "((:foo -> :foo; :bar -> :bar) -> {:foo, :bar})"
+
       assert quoted_of(fn x -> fn y -> {x.(y), x.(:foo)} end end) |> format() ==
              "((a -> b; :foo -> c) -> (a -> {b, c}))"
 
@@ -611,6 +634,9 @@ defmodule Types.CheckerTest do
 
       assert quoted_of(fn x -> fn y -> {x.(x.(y)), x.(:foo)} end end) |> format() ==
              "((a -> a; :foo -> b) -> (a -> {a, b}))"
+
+      assert quoted_of(fn x -> fn y -> {x.(x.(y)), x.(x.(y))} end end) |> format() ==
+             "((a -> a) -> (a -> {a, a}))"
 
       assert quoted_of(fn x -> {x.(:foo), x.(:bar)} end) |> format() ==
              "((:foo -> a; :bar -> b) -> {a, b})"

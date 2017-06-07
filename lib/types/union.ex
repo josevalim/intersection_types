@@ -334,7 +334,6 @@ defmodule Types.Union do
   Same as `traverse/2` but goes through the list
   of arguments.
   """
-  # TODO: Review use of traverse_args
   def traverse_args(args, state, fun) do
     Enum.map_reduce(args, state, &traverse(&1, [], &2, fun))
   end

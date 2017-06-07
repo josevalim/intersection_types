@@ -23,7 +23,7 @@ defmodule Types do
   empty. The intersection between `atom()` and `:foo` is the atom
   `:foo` itself. However, the concept of intersection is quite
   interesting for functions, as they allow us to express functions
-  with multiple closes, which is very common in Elixir.
+  with multiple clauses, which is very common in Elixir.
 
   For example, a function that receives an integer and returns an
   integer would inhabit the type `(integer() -> integer())`. One
@@ -39,7 +39,7 @@ defmodule Types do
   Even though the function above has multiple clauses, it is still
   capable of receiving an integer and returning another integer.
 
-  Similar, a funciton that receives a boolean and returns a boolean
+  Similarly, a function that receives a boolean and returns a boolean
   would inhabit the type `(boolean() -> boolean())`. One of such
   functions would be:
 
@@ -102,15 +102,20 @@ defmodule Types do
     * What are principal typings and what are they good for? (Trevor Jim)
       This paper describes rank 2 intersection type systems. Elixir
       implements a restricted rank 2 intersection types where intersections
-      can only be expressed as independent function clauses. This means
-      we can't infer the type for `x.(x)`, as it has the type `(a ^ (a -> b))`
-      which is the intersection between a type variable and a function.
-      Similarly, for `x.(x.(y))` we infer the same type as in a Hindley-Milner
-      type system as otherwise it would have the type `(a -> b) ^ (b -> c)`
-      which has dependency between clauses. However, for expressions
-      such as `{x.(:foo), x.(:bar)}`, we infer the proper intersection
-      type `(:bar -> a) ^ (:foo -> b)` expressed as `(:bar -> a; :foo -> b)`.
-      The recursive typing rules are also taken from this paper.
+      can only be expressed as independent function clauses with shared
+      variables only in the body.
+
+      This means we can't infer the type for `x.(x)`, as it has the type
+      `(a ^ (a -> b))`, which is the intersection between a type variable
+      and a function. Similarly, `x.(x.(y))` would have na intersection
+      type `(a -> b) ^ (b -> c)` which has a dependency between a body and
+      a head variable.
+
+      In such cases, we infer the same type as in a Hindley-Milner system.
+      However, for expressions such as `{x.(:foo), x.(:bar)}`, we infer the
+      proper intersection type `(:bar -> a) ^ (:foo -> b)` expressed as
+      `(:bar -> a; :foo -> b)`. The recursive typing rules are also taken
+      from this paper.
 
   ### Erlang papers
 

@@ -149,12 +149,12 @@ defmodule Types.Checker do
 
   defp unify_each({:fn, lefties, left_inferred, arity}, {:fn, righties, right_inferred, arity},
                   keep, vars, type_vars, acc_vars) do
-    unify_fn(lefties, left_inferred, righties, right_inferred, keep, vars, type_vars, acc_vars)
+    unify_fn(lefties, righties, right_inferred, Map.merge(keep, left_inferred), vars, type_vars, acc_vars)
   end
 
   defp unify_each({:cons, left1, right1}, {:cons, left2, right2},
                   keep, vars, type_vars, acc_vars) do
-    case unify_args([left1, right1], [left2, right2], keep, vars, type_vars, acc_vars) do
+    case unify_composite([left1, right1], [left2, right2], keep, vars, type_vars, acc_vars) do
       {:match, _, type_vars, acc_vars} ->
         {:match, type_vars, acc_vars}
       {:subset, [right, left], type_vars, acc_vars} ->
@@ -166,7 +166,7 @@ defmodule Types.Checker do
 
   defp unify_each({:tuple, lefties, arity}, {:tuple, righties, arity},
                   keep, vars, type_vars, acc_vars) do
-    case unify_args(lefties, righties, keep, vars, type_vars, acc_vars) do
+    case unify_composite(lefties, righties, keep, vars, type_vars, acc_vars) do
       {:match, _, type_vars, acc_vars} ->
         {:match, type_vars, acc_vars}
       {:subset, args, type_vars, acc_vars} ->
@@ -207,47 +207,64 @@ defmodule Types.Checker do
     end
   end
 
-  defp unify_fn([{left_head, left_body} | lefties], left_inferred, righties, right_inferred,
+  defp unify_fn([{left_head, left_body} | lefties], righties, right_inferred,
                 keep, vars, type_vars, acc_vars) do
-    keep = Map.merge(keep, left_inferred)
-
-    case unify_fn(left_head, left_body, left_inferred, righties, right_inferred,
+    case unify_fn(left_head, left_body, righties, right_inferred,
                   keep, vars, type_vars, acc_vars, false) do
       {type_vars, acc_vars} ->
-        unify_fn(lefties, left_inferred, righties, right_inferred, keep, type_vars, type_vars, acc_vars)
+        unify_fn(lefties, righties, right_inferred, keep, type_vars, type_vars, acc_vars)
       :error ->
         :disjoint
     end
   end
-  defp unify_fn([], _left_inferred, _righties, _right_inferred, _keep, _vars, type_vars, acc_vars) do
+  defp unify_fn([], _righties, _right_inferred, _keep, _vars, type_vars, acc_vars) do
     {:match, type_vars, acc_vars}
   end
 
-  defp unify_fn(left_head, left_body, left_inferred,
-                [{right_head, right_body} | clauses], right_inferred,
+  defp unify_fn(left_head, left_body, [{right_head, right_body} | clauses], right_inferred,
                 keep, vars, type_vars, acc_vars, matched?) do
     keep = Map.merge(keep, right_inferred)
     vars = Map.merge(vars, keep)
     type_vars = Map.merge(type_vars, keep)
 
     with {:match, _, type_vars, acc_vars} <-
-           unify_head(left_head, right_head, keep, vars, type_vars, acc_vars),
+           unify_args(right_head, left_head, keep, vars, type_vars, acc_vars),
          right_body = bind(right_body, right_inferred, type_vars),
          {:match, _, type_vars, acc_vars} <-
            unify(left_body, right_body, keep, type_vars, type_vars, acc_vars) do
-      unify_fn(left_head, left_body, left_inferred, clauses, right_inferred,
+      unify_fn(left_head, left_body, clauses, right_inferred,
                keep, vars, type_vars, acc_vars, true)
     else
       _ ->
-        unify_fn(left_head, left_body, left_inferred, clauses, right_inferred,
+        unify_fn(left_head, left_body, clauses, right_inferred,
                  keep, vars, type_vars, acc_vars, matched?)
     end
   end
-  defp unify_fn(_, _, _, [], _right_inferred, _keep, _vars, type_vars, acc_vars, true) do
+  defp unify_fn(_, _, [], _right_inferred, _keep, _vars, type_vars, acc_vars, true) do
     {type_vars, acc_vars}
   end
-  defp unify_fn(_, _, _, [], _right_inferred, _keep, _vars, _type_vars, _acc_vars, false) do
+  defp unify_fn(_, _, [], _right_inferred, _keep, _vars, _type_vars, _acc_vars, false) do
     :error
+  end
+
+  defp unify_composite(lefties, righties, keep, vars, type_vars, acc_vars) do
+    unify_composite(lefties, righties, keep, vars, type_vars, acc_vars, :match, [])
+  end
+  defp unify_composite([left | lefties], [right | righties],
+                  keep, vars, type_vars, acc_vars, acc_kind, acc_matched) do
+    case unify_each(left, right, keep, vars, type_vars, acc_vars) do
+      {:match, type_vars, acc_vars} ->
+        unify_composite(lefties, righties, keep, vars, type_vars, acc_vars,
+                        unify_min(:match, acc_kind), [right | acc_matched])
+      {:subset, subset, type_vars, acc_vars} ->
+        unify_composite(lefties, righties, keep, vars, type_vars, acc_vars,
+                        unify_min(:subset, acc_kind), [subset | acc_matched])
+      :disjoint ->
+        :disjoint
+    end
+  end
+  defp unify_composite([], [], _keep, _vars, type_vars, acc_vars, kind, acc_matched) do
+    {kind, acc_matched, type_vars, acc_vars}
   end
 
   defp unify_args(lefties, righties, keep, vars, type_vars, acc_vars) do
@@ -255,35 +272,15 @@ defmodule Types.Checker do
   end
   defp unify_args([left | lefties], [right | righties],
                   keep, vars, type_vars, acc_vars, acc_kind, acc_matched) do
-    case unify_each(left, right, keep, vars, type_vars, acc_vars) do
-      {:match, type_vars, acc_vars} ->
-        unify_args(lefties, righties, keep, vars, type_vars, acc_vars,
-                   unify_min(:match, acc_kind), [right | acc_matched])
-      {:subset, subset, type_vars, acc_vars} ->
-        unify_args(lefties, righties, keep, vars, type_vars, acc_vars,
-                   unify_min(:subset, acc_kind), [subset | acc_matched])
-      :disjoint ->
-        :disjoint
-    end
-  end
-  defp unify_args([], [], _keep, _vars, type_vars, acc_vars, kind, acc_matched) do
-    {kind, acc_matched, type_vars, acc_vars}
-  end
-
-  defp unify_head(lefties, righties, keep, vars, type_vars, acc_vars) do
-    unify_head(lefties, righties, keep, vars, type_vars, acc_vars, :match, [])
-  end
-  defp unify_head([left | lefties], [right | righties],
-                  keep, vars, type_vars, acc_vars, acc_kind, acc_matched) do
     case unify(left, right, keep, vars, type_vars, acc_vars) do
       {:disjoint, _, _, _} = disjoint ->
         disjoint
       {kind, matched, type_vars, acc_vars} ->
-        unify_head(lefties, righties, keep, vars, type_vars, acc_vars,
+        unify_args(lefties, righties, keep, vars, type_vars, acc_vars,
                    unify_min(kind, acc_kind), [matched | acc_matched])
     end
   end
-  defp unify_head([], [], _keep, _vars, type_vars, acc_vars, kind, acc_matched) do
+  defp unify_args([], [], _keep, _vars, type_vars, acc_vars, kind, acc_matched) do
     {kind, acc_matched, type_vars, acc_vars}
   end
 
@@ -466,9 +463,9 @@ defmodule Types.Checker do
     {var_level, var_applies, var_deps} = Map.fetch!(levels, var_counter)
 
     # We allow only a limited for of level 2 intersections where
-    # type variables in one clause do not affect type variables
-    # in other clauses. This means we need to carefully check the
-    # argument types input considering that:
+    # type variables can only be shared between bodies. This means
+    # we need to carefully check the argument types input considering
+    # that:
     #
     #   1. if a variable is called passing itself as an argument,
     #      such as `x.(x)`, it is a recursive call that would have
@@ -585,7 +582,7 @@ defmodule Types.Checker do
                                 funs, args, recur, inferred, sum, acc_inferred) do
     with true <- var_recur in recur,
          {:match, _, _, acc_inferred} <-
-           unify_head(args, head, %{}, inferred, inferred, acc_inferred) do
+           unify_args(args, head, %{}, inferred, inferred, acc_inferred) do
       of_var_apply_unify_recur(clauses, funs, args, recur, inferred, Union.union(body, sum), acc_inferred)
     else
       _ -> of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
@@ -940,7 +937,6 @@ defmodule Types.Checker do
     of_pattern_each(ast, %{state | match: %{}})
   end
 
-  # TODO: Test :: permutes inside patterns inside tuples
   defp of_pattern_each({:::, meta, [{var, _, ctx}, ast]}, state)
        when is_atom(var) and (is_atom(ctx) or is_integer(ctx)) do
     case Union.ast_to_types(ast) do
