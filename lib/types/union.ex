@@ -385,13 +385,8 @@ defmodule Types.Union do
   @doc """
   Qualifies two non-union types.
 
-  This is the "heart" of union types as it is the part of
-  the code that knows the relationship between types and
-  therefore how to compute the union between them.
-
-  In other words, this is part that handles subtyping,
-  given union is only complicated if one type inhabits
-  another.
+  This is the code responsible for handling subtypes,
+  such as {:atom, :foo} being a subtype of :atom.
 
   It returns one of :disjoint, :equal, :subset or :superset.
   """

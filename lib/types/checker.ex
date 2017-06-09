@@ -31,59 +31,30 @@ defmodule Types.Checker do
   """
   # TODO: Include error reason every time unification fails.
   def unify(left, right, vars, acc_vars) do
-    unify(left, unify_counter(right, 0), vars, acc_vars, %{})
+    unify(left, right, vars, acc_vars, [], true)
   end
 
-  defp unify([left | lefties], righties, vars, acc_vars, unmatched) do
-    unify(left, righties, vars, acc_vars, lefties, righties, unmatched)
+  defp unify([left | lefties], righties, vars, acc_vars, matched, matched?) do
+    unify(left, righties, vars, acc_vars, lefties, righties, matched, matched?)
   end
-  defp unify([], righties, _vars, acc_vars, unmatched) do
-    {kind, matched} = unify_matched(righties, unmatched, :match, [])
-    {kind, matched, acc_vars}
+  defp unify([], _righties, _vars, acc_vars, matched, true) do
+    {:match, matched, acc_vars}
+  end
+  defp unify([], _righties, _vars, acc_vars, matched, false) do
+    {:disjoint, matched, acc_vars}
   end
 
-  defp unify(left, [{key, type} | types], vars, acc_vars,
-             lefties, righties, unmatched) do
+  defp unify(left, [type | types], vars, acc_vars, lefties, righties, matched, matched?) do
     case unify_each(left, type, vars, acc_vars) do
       {:match, acc_vars} ->
-        unify(left, types, vars, acc_vars,
-              lefties, righties, Map.put(unmatched, key, {:match, type}))
-      {:subset, type, acc_vars} ->
-        unify(left, types, vars, acc_vars,
-              lefties, righties, Map.put_new(unmatched, key, {:subset, type}))
+        unify(left, types, vars, acc_vars, lefties, righties, [type | matched], matched?)
       :disjoint ->
-        unify(left, types, vars, acc_vars,
-              lefties, righties, unmatched)
+        unify(left, types, vars, acc_vars, lefties, righties, matched, false)
     end
   end
-  defp unify(_left, [], vars, acc_vars, lefties, righties, unmatched) do
-    unify(lefties, righties, vars, acc_vars, unmatched)
+  defp unify(_left, [], vars, acc_vars, lefties, righties, matched, matched?) do
+    unify(lefties, righties, vars, acc_vars, matched, matched?)
   end
-
-  defp unify_counter([type | types], counter) do
-    [{counter, type} | unify_counter(types, counter + 1)]
-  end
-  defp unify_counter([], _counter) do
-    []
-  end
-
-  defp unify_matched([{key, _} | righties], unmatched, kind, matched) do
-    case Map.fetch(unmatched, key) do
-      {:ok, {new_kind, new_value}} ->
-        unify_matched(righties, unmatched, unify_min(kind, new_kind), [new_value | matched])
-      :error ->
-        unify_matched(righties, unmatched, :disjoint, matched)
-    end
-  end
-  defp unify_matched([], _unmatched, kind, matched) do
-    {kind, :lists.reverse(matched)}
-  end
-
-  defp unify_min(:disjoint, _), do: :disjoint
-  defp unify_min(_, :disjoint), do: :disjoint
-  defp unify_min(:subset, _), do: :subset
-  defp unify_min(_, :subset), do: :subset
-  defp unify_min(_, _), do: :match
 
   defp unify_each(type, type, _vars, acc_vars) do
     {:match, acc_vars}
@@ -125,11 +96,36 @@ defmodule Types.Checker do
   end
 
   defp unify_each({:var, _, key}, type, vars, acc_vars) do
-    unify_var(key, type, vars, acc_vars)
+    case Map.get(vars, key, []) do
+      [] ->
+        {:match,
+         Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
+      value ->
+        with {_, [_ | _] = match, new_vars} <- unify(value, [type], vars, %{}) do
+          acc_vars = Map.merge(acc_vars, new_vars)
+          {:match,
+           Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))}
+        else
+          _ -> :disjoint
+        end
+    end
   end
 
+  # Variables on the right side always need to match.
   defp unify_each(type, {:var, _, key}, vars, acc_vars) do
-    unify_var(key, type, vars, acc_vars)
+    case Map.get(vars, key, []) do
+      [] ->
+        {:match,
+         Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
+      value ->
+        with {_, [_ | _] = match, new_vars} <- unify([type], value, vars, %{}) do
+          acc_vars = Map.merge(acc_vars, new_vars)
+          {:match,
+           Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))}
+        else
+          _ -> :disjoint
+        end
+    end
   end
 
   defp unify_each({:fn, lefties, left_inferred, arity}, {:fn, righties, right_inferred, arity},
@@ -153,8 +149,6 @@ defmodule Types.Checker do
     case unify_paired([left1, right1], [left2, right2], vars, acc_vars) do
       {:match, _, acc_vars} ->
         {:match, acc_vars}
-      {:subset, [right, left], acc_vars} ->
-        {:subset, {:cons, left, right}, acc_vars}
       :disjoint ->
         :disjoint
     end
@@ -165,8 +159,6 @@ defmodule Types.Checker do
     case unify_paired(lefties, righties, vars, acc_vars) do
       {:match, _, acc_vars} ->
         {:match, acc_vars}
-      {:subset, args, acc_vars} ->
-        {:subset, {:tuple, :lists.reverse(args), arity}, acc_vars}
       :disjoint ->
         :disjoint
     end
@@ -176,31 +168,29 @@ defmodule Types.Checker do
     case Union.qualify(left, right) do
       :equal -> {:match, acc_vars}
       :superset -> {:match, acc_vars}
-      :subset -> {:subset, left, acc_vars}
+      :subset -> :disjoint
       :disjoint -> :disjoint
     end
   end
 
-  defp unify_var(key, type, vars, acc_vars) do
-    case Map.get(vars, key, []) do
-      [] ->
-        {:match,
-         Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
-      value ->
-        # We find which values we are allowed to keep. In case var is
-        # comes from the left side, it may actually point to a variable
-        # on the right side, which means we must always pass value on
-        # the right.
-        with {_, [_ | _] = match, new_vars} <- unify(value, [type], vars, %{}) do
-          acc_vars = Map.merge(acc_vars, new_vars)
-          {:match,
-           Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))}
-        else
-          _ -> :disjoint
-        end
-    end
-  end
-
+  # Unifying functions is quite complex as it requires tracking
+  # different kinds of variables and renewing them at different
+  # stages.
+  #
+  # We will explore those scenarios below.
+  #
+  # ## Example 1
+  #
+  #     ((a -> b) -> (a -> b)) <~> (:foo -> :bar; :bar -> :baz)
+  #
+  # should unify to:
+  #
+  #     (:foo | :bar; :bar | :baz)
+  #
+  # Note the left side is made of three functions, where the variables
+  # (a -> b) are defined in the outermost one. This means that, we
+  # need to know which variables have been in the outermost function
+  # and properly pass them forward for "cleaning" the inferred variables.
   defp unify_fn([{left_heads, left_body} | lefties], righties, left_inferred, right_inferred,
                 vars, type_vars, acc_vars) do
     case unify_fn(left_heads, left_body, righties, left_inferred, right_inferred,
@@ -211,7 +201,7 @@ defmodule Types.Checker do
         :disjoint
     end
   end
-  defp unify_fn([], _righties, _left_inferred, _right_inferred, _vars, type_vars, acc_vars) do
+  defp unify_fn([], _righties, _left_inferred, _right_inferred, _vars, _type_vars, acc_vars) do
     {:match, acc_vars}
   end
 
@@ -222,8 +212,8 @@ defmodule Types.Checker do
 
     match =
       Enum.find_value(left_heads, fn left_head ->
-        case unify_paired(left_head, right_head, type_vars, %{}) do
-          {:match, _, new_vars} = match -> match
+        case unify_paired(right_head, left_head, type_vars, %{}) do
+          {:match, _, _} = match -> match
           _ -> nil
         end
       end)
@@ -251,43 +241,33 @@ defmodule Types.Checker do
   end
 
   defp unify_paired(lefties, righties, vars, acc_vars) do
-    unify_paired(lefties, righties, vars, acc_vars, :match, [])
+    unify_paired(lefties, righties, vars, acc_vars, [])
   end
-  defp unify_paired([left | lefties], [right | righties],
-                    vars, acc_vars, acc_kind, acc_matched) do
+  defp unify_paired([left | lefties], [right | righties], vars, acc_vars, matched) do
     case unify_each(left, right, vars, %{}) do
       {:match, new_vars} ->
         vars = Map.merge(vars, new_vars)
-        unify_paired(lefties, righties, vars, Map.merge(acc_vars, new_vars, fn _, v1, v2 -> Union.union(v1, v2) end),
-                     unify_min(:match, acc_kind), [right | acc_matched])
-      {:subset, subset, new_vars} ->
-        vars = Map.merge(vars, new_vars)
-        unify_paired(lefties, righties, vars, Map.merge(acc_vars, new_vars, fn _, v1, v2 -> Union.union(v1, v2) end),
-                     unify_min(:subset, acc_kind), [subset | acc_matched])
+        acc_vars = Map.merge(acc_vars, new_vars, fn _, v1, v2 -> Union.union(v1, v2) end)
+        unify_paired(lefties, righties, vars, acc_vars, [right | matched])
       :disjoint ->
         :disjoint
     end
   end
-  defp unify_paired([], [], _vars, acc_vars, kind, acc_matched) do
-    {kind, acc_matched, acc_vars}
+  defp unify_paired([], [], _vars, acc_vars, matched) do
+    {:match, :lists.reverse(matched), acc_vars}
   end
 
   # TODO: Review or remove me
-  def unify_args(lefties, righties, vars, acc_vars) do
-    unify_args(lefties, righties, vars, acc_vars, :match, [])
-  end
-  defp unify_args([left | lefties], [right | righties],
-                  vars, acc_vars, acc_kind, acc_matched) do
+  def unify_args([left | lefties], [right | righties], vars, acc_vars) do
     case unify(left, right, vars, acc_vars) do
-      {:disjoint, _, _} = disjoint ->
-        disjoint
-      {kind, matched, acc_vars} ->
-        unify_args(lefties, righties, vars, acc_vars,
-                   unify_min(kind, acc_kind), [matched | acc_matched])
+      {:match, _, acc_vars} ->
+        unify_args(lefties, righties, vars, acc_vars)
+      {:disjoint, _, _} ->
+        :disjoint
     end
   end
-  defp unify_args([], [], _vars, acc_vars, kind, acc_matched) do
-    {kind, acc_matched, acc_vars}
+  def unify_args([], [], _vars, acc_vars) do
+    {:match, acc_vars}
   end
 
   @doc """
@@ -397,9 +377,9 @@ defmodule Types.Checker do
       %{match: match, vars: vars, inferred: inferred} = state
 
       case of_match(left, right, inferred, inferred) do
-        {:ok, inferred} ->
-          {vars, inferred} = of_match_vars(Map.to_list(match), vars, inferred)
-          ok(right, %{state | inferred: inferred, vars: vars})
+        {:ok, new_inferred} ->
+          {vars, new_inferred} = of_match_vars(Map.to_list(match), vars, new_inferred)
+          ok(right, %{state | inferred: new_inferred, vars: vars})
         :error ->
           error(meta, {:disjoint_match, left, right})
       end
@@ -588,7 +568,7 @@ defmodule Types.Checker do
   defp of_var_apply_unify_recur([{head, [{:var, _, var_recur}] = body} | clauses],
                                 funs, args, recur, inferred, sum, acc_inferred) do
     with true <- var_recur in recur,
-         {:match, _, acc_inferred} <- unify_args(args, head, inferred, acc_inferred) do
+         {:match, acc_inferred} <- unify_args(args, head, inferred, acc_inferred) do
       of_var_apply_unify_recur(clauses, funs, args, recur, inferred, Union.union(body, sum), acc_inferred)
     else
       _ -> of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
@@ -744,6 +724,7 @@ defmodule Types.Checker do
 
   ## Clauses
 
+  # TODO: Check if clauses have overlapping types
   defp of_fn_clauses(clauses, state) do
     of_fn_clauses(clauses, state, [], %{}, state)
   end
@@ -760,13 +741,29 @@ defmodule Types.Checker do
     {:ok, :lists.reverse(acc_clauses), acc_inferred, acc_state}
   end
 
-  # TODO: Check if clauses have overlapping types
-  defp of_fn_clause({:->, _, [args, body]}, state) do
-    with {:ok, args, %{match: match, vars: vars} = clause_state} <- of_pattern(args, state),
-         clause_state = %{clause_state | vars: Map.merge(vars, match)},
-         {:ok, body, clause_state} <- of(body, clause_state) do
-      {:ok, args, body, %{clause_state | match: match}}
+  defp of_fn_clause({:->, meta, [args, body]}, state) do
+    with {:ok, args, head_state} <- of_pattern(args, state),
+         %{match: match, vars: vars, inferred: old_inferred} = head_state,
+         head_state = %{head_state | vars: Map.merge(vars, match)},
+         {:ok, body, %{inferred: new_inferred} = body_state} <- of(body, head_state) do
+      case of_fn_verify(match, old_inferred, new_inferred) do
+        {:ok, _} -> {:ok, args, body, %{body_state | match: match}}
+        {:error, var, old, new} -> error(meta, {:restricted_head, var, old, new})
+      end
     end
+  end
+
+  defp of_fn_verify(match, old_inferred, new_inferred) do
+    Enum.reduce_while(match, {:ok, new_inferred}, fn
+      {_, {_, [{_, _, counter} = var]}}, {:ok, new_inferred} ->
+        old = Map.get(old_inferred, counter, [])
+        {new, new_inferred} = Map.pop(new_inferred, counter)
+        if old == [] or old == new do
+          {:cont, {:ok, new_inferred}}
+        else
+          {:halt, {:error, var, old, new}}
+        end
+    end)
   end
 
   defp of_fn_expand(head, body, clause_state) do

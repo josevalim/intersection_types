@@ -196,9 +196,14 @@ defmodule Types.CheckerTest do
       assert quoted_of((fn :foo -> :bar; y :: atom() -> :baz end).(:foo)) |> format() ==
              ":bar"
 
-      # TODO: This should fail to compile or emit a warning
-      assert quoted_of(fn x :: boolean() -> (fn true -> true end).(x) end) |> format() ==
-             "(true -> true)"
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+             quoted_of(fn x :: atom() -> (fn :foo -> :foo end).(x) end)
+
+      assert {:error, _, {:restricted_head, _, _, _}} =
+             quoted_of(fn x :: boolean() -> (fn true -> true end).(x) end)
+
+      assert {:error, _, {:restricted_head, _, _, _}} =
+             quoted_of(fn x :: boolean() -> true = x end)
     end
 
     test "with inference" do
@@ -242,7 +247,7 @@ defmodule Types.CheckerTest do
       end) |> format() == "(true -> true)"
 
       assert quoted_of(fn x ->
-        (fn y :: boolean() -> y end).(x)
+        true = (fn y :: boolean() -> y end).(x)
         (fn z ->
           (fn true -> true end).(z)
           z
@@ -252,15 +257,6 @@ defmodule Types.CheckerTest do
       assert {:error, _, {:disjoint_apply, _, _, _}} =
         quoted_of(fn x ->
           false = (fn y :: boolean() -> y end).(x)
-          (fn z ->
-            (fn true -> true end).(z)
-            z
-          end).(x)
-        end)
-
-      assert {:error, _, {:disjoint_apply, _, _, _}} =
-        quoted_of(fn x ->
-          (fn y :: integer() -> y end).(x)
           (fn z ->
             (fn true -> true end).(z)
             z
@@ -310,7 +306,7 @@ defmodule Types.CheckerTest do
 
       assert quoted_of(fn x :: atom() ->
         (fn :foo -> :bar; y :: atom() -> :baz end).(x)
-      end) |> format() == "(atom() -> :bar | :baz)"
+      end) |> format() == "(atom() -> :baz)"
     end
 
     # TODO: Make this pass. See notes in union.ex.
@@ -615,6 +611,10 @@ defmodule Types.CheckerTest do
 
     test "pattern matching" do
       assert quoted_of((a = (a = true; b = false); a)) |> format() == "false"
+    end
+
+    test "with types" do
+      assert quoted_of((x :: boolean()) = true) |> format() == "true"
     end
   end
 
