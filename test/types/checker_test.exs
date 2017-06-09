@@ -613,8 +613,9 @@ defmodule Types.CheckerTest do
       assert quoted_of((a = (a = true; b = false); a)) |> format() == "false"
     end
 
-    test "with types" do
-      assert quoted_of((x :: boolean()) = true) |> format() == "true"
+    test "with binding" do
+      assert {:error, _, {:match_binding, _}} =
+             quoted_of((x :: boolean()) = true)
     end
   end
 

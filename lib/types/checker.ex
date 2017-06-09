@@ -81,11 +81,10 @@ defmodule Types.Checker do
         end
 
       {left_value, right_value} ->
-        with {_, [_ | _] = match, new_vars} <-
-               unify(left_value, right_value, vars, %{}) do
+        with {_, [_ | _] = match, acc_vars} <-
+               unify(left_value, right_value, vars, acc_vars) do
           acc_vars =
             acc_vars
-            |> Map.merge(new_vars)
             |> Map.update(key1, match, &Union.union(&1 -- left_value, match))
             |> Map.update(key2, match, &Union.union(&1 -- right_value, match))
           {:match, acc_vars}
@@ -98,15 +97,14 @@ defmodule Types.Checker do
   defp unify_each({:var, _, key}, type, vars, acc_vars) do
     case Map.get(vars, key, []) do
       [] ->
-        {:match,
-         Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
+        {:match, Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
       value ->
-        with {_, [_ | _] = match, new_vars} <- unify(value, [type], vars, %{}) do
-          acc_vars = Map.merge(acc_vars, new_vars)
-          {:match,
-           Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))}
-        else
-          _ -> :disjoint
+        case unify(value, [type], vars, acc_vars) do
+          {_, [_ | _] = match, acc_vars} ->
+            acc_vars = Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))
+            {:match, acc_vars}
+          _ ->
+            :disjoint
         end
     end
   end
@@ -115,15 +113,14 @@ defmodule Types.Checker do
   defp unify_each(type, {:var, _, key}, vars, acc_vars) do
     case Map.get(vars, key, []) do
       [] ->
-        {:match,
-         Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
+        {:match, Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
       value ->
-        with {_, [_ | _] = match, new_vars} <- unify([type], value, vars, %{}) do
-          acc_vars = Map.merge(acc_vars, new_vars)
-          {:match,
-           Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))}
-        else
-          _ -> :disjoint
+        case unify([type], value, vars, acc_vars) do
+          {_, [_ | _] = match, acc_vars} ->
+            acc_vars = Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))
+            {:match, acc_vars}
+          _ ->
+            :disjoint
         end
     end
   end
@@ -378,8 +375,10 @@ defmodule Types.Checker do
 
       case of_match(left, right, inferred, inferred) do
         {:ok, new_inferred} ->
-          {vars, new_inferred} = of_match_vars(Map.to_list(match), vars, new_inferred)
-          ok(right, %{state | inferred: new_inferred, vars: vars})
+          case of_match_vars(Map.to_list(match), vars, inferred, new_inferred) do
+            {vars, new_inferred} -> ok(right, %{state | inferred: new_inferred, vars: vars})
+            :error -> error(meta, {:match_binding, left})
+          end
         :error ->
           error(meta, {:disjoint_match, left, right})
       end
@@ -713,12 +712,23 @@ defmodule Types.Checker do
     {:ok, acc_inferred}
   end
 
-  defp of_match_vars([{var_ctx, {level, [{_, _, counter}]}} | matches], vars, inferred) do
-    of_match_vars(matches,
-                  Map.put(vars, var_ctx, {level, Map.fetch!(inferred, counter)}),
-                  Map.delete(inferred, counter))
+  # We check the original match bindings because we don't allow binding
+  # with `::` on the left side of `=` for simplicity reasons. If desired,
+  # this could be implemented by introducing a new state field that keeps
+  # track exclusively of `::` which are verified at the end of every scope.
+  # The current implementation relies on `match` variables for that (as to
+  # not introduce a new field).
+  defp of_match_vars([{var_ctx, {level, [{_, _, counter}]}} | matches], vars, bindings, inferred) do
+    case Map.fetch!(bindings, counter) do
+      [] ->
+        of_match_vars(matches,
+                      Map.put(vars, var_ctx, {level, Map.fetch!(inferred, counter)}),
+                      bindings, Map.delete(inferred, counter))
+      _ ->
+        :error
+    end
   end
-  defp of_match_vars([], vars, inferred) do
+  defp of_match_vars([], vars, _bindings, inferred) do
     {vars, inferred}
   end
 
