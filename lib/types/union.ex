@@ -390,8 +390,8 @@ defmodule Types.Union do
 
   It returns one of :disjoint, :equal, :subset or :superset.
   """
-  # TODO: Reevaluate the use of subset given (fn :foo -> :foo end).(atom())
-  # is not guaranteed to match
+  # TODO: Maybe we no longer need lvars and rvars.
+  # Maybe we don't need tuples at all.
   def qualify(left, right) do
     qualify(left, right, %{}, %{}) |> elem(0)
   end

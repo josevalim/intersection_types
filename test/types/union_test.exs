@@ -34,6 +34,10 @@ defmodule Types.UnionTest do
              [:integer, {:atom, :foo}]
     end
 
+    test "vars" do
+      assert union([{:var, {:x, nil}, 0}], [{:var, {:x, nil}, 0}]) == [{:var, {:x, nil}, 0}]
+    end
+
     test "tuples" do
       assert quoted_union({}, {:foo}) ==
              [{:tuple, [], 0}, {:tuple, [atom: :foo], 1}]
