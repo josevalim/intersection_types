@@ -613,6 +613,8 @@ defmodule Types.Checker do
     end
   end
 
+  # TODO: Validate the whole unify recursion logic.
+  # Is the use of unify_args correct? Is the :recursive return correct?
   defp of_var_apply_unify_recur([{:fn, clauses, _, _} | funs], args, recur, inferred, sum, acc_inferred) do
     of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
   end
@@ -627,7 +629,6 @@ defmodule Types.Checker do
   defp of_var_apply_unify_recur([{head, [{:var, _, var_recur}] = body} | clauses],
                                 funs, args, recur, inferred, sum, acc_inferred) do
     with true <- var_recur in recur,
-         # TODO: Figure out the keep value
          {:match, acc_inferred} <- unify_args(args, head, %{}, inferred, acc_inferred) do
       of_var_apply_unify_recur(clauses, funs, args, recur, inferred, Union.union(body, sum), acc_inferred)
     else

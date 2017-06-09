@@ -390,66 +390,40 @@ defmodule Types.Union do
 
   It returns one of :disjoint, :equal, :subset or :superset.
   """
-  # TODO: Maybe we no longer need lvars and rvars.
-  # Maybe we don't need tuples at all.
-  def qualify(left, right) do
-    qualify(left, right, %{}, %{}) |> elem(0)
+  def qualify(left, right)
+
+  def qualify(type, type), do: :equal
+
+  def qualify(:atom, {:atom, atom}) when is_atom(atom), do: :superset
+  def qualify({:atom, atom}, :atom) when is_atom(atom), do: :subset
+
+  def qualify({:tuple, args1, arity}, {:tuple, args2, arity}) do
+    qualify_paired(args1, args2, :equal)
   end
 
-  defp qualify(type, type, lvars, rvars), do: {:equal, lvars, rvars}
+  def qualify({:cons, left1, right1}, {:cons, left2, right2}) do
+    qualify_paired([left1, right1], [left2, right2], :equal)
+  end
 
-  defp qualify({:var, _, left_counter} = left, {:var, _, right_counter} = right, lvars, rvars) do
-    left_value = Map.get(lvars, left_counter, [right])
-    right_value = Map.get(rvars, right_counter, [left])
-    if left_value == right_value do
-      {:equal,
-       Map.put(lvars, left_counter, left_value),
-       Map.put(rvars, right_counter, right_value)}
-    else
-      {:disjoint, lvars, rvars}
+  def qualify(_, _), do: :disjoint
+
+  defp qualify_paired([left | lefties], [right | righties], :equal) do
+    case qualify(left, right) do
+      :disjoint -> :disjoint
+      kind -> qualify_paired(lefties, righties, kind)
     end
   end
 
-  defp qualify(:atom, {:atom, atom}, lvars, rvars) when is_atom(atom), do: {:superset, lvars, rvars}
-  defp qualify({:atom, atom}, :atom, lvars, rvars) when is_atom(atom), do: {:subset, lvars, rvars}
-
-  defp qualify({:tuple, args1, arity}, {:tuple, args2, arity}, lvars, rvars) do
-    qualify_args(args1, args2, lvars, rvars, :equal)
-  end
-
-  defp qualify({:cons, left1, right1}, {:cons, left2, right2}, lvars, rvars) do
-    qualify_args([left1, right1], [left2, right2], lvars, rvars, :equal)
-  end
-
-  defp qualify(_, _, lvars, rvars), do: {:disjoint, lvars, rvars}
-
-  @doc """
-  Qualifies multiple arguments.
-
-  The same as `qualify/2` but for arguments.
-  """
-  # TODO: Review use of qualify_args
-  def qualify_args(left, right) do
-    qualify_args(left, right, %{}, %{}, :equal) |> elem(0)
-  end
-
-  defp qualify_args([left | lefties], [right | righties], lvars, rvars, :equal) do
-    case qualify(left, right, lvars, rvars) do
-      {:disjoint, lvars, rvars} -> {:disjoint, lvars, rvars}
-      {kind, lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, kind)
+  defp qualify_paired([left | lefties], [right | righties], kind) do
+    case qualify(left, right) do
+      ^kind -> qualify_paired(lefties, righties, kind)
+      :equal -> qualify_paired(lefties, righties, kind)
+      _ -> :disjoint
     end
   end
 
-  defp qualify_args([left | lefties], [right | righties], lvars, rvars, kind) do
-    case qualify(left, right, lvars, rvars) do
-      {^kind, lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, kind)
-      {:equal, lvars, rvars} -> qualify_args(lefties, righties, lvars, rvars, kind)
-      {_, lvars, rvars} -> {:disjoint, lvars, rvars}
-    end
-  end
-
-  defp qualify_args([], [], lvars, rvars, kind) do
-    {kind, lvars, rvars}
+  defp qualify_paired([], [], kind) do
+    kind
   end
 
   @doc """
