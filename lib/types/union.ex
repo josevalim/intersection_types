@@ -61,6 +61,7 @@ defmodule Types.Union do
   Converts a union type into an iodata representation
   that can be printed.
   """
+  @spec to_iodata({:ok, var} | {:ok, integer()}, {:error, var} | atom()) :: atom when var: var
   def to_iodata(types, width \\ :infinity) do
     types
     |> to_algebra()
@@ -137,9 +138,13 @@ defmodule Types.Union do
     {A.fold_doc(args, &A.glue(A.concat(&1, ","), &2)), state}
   end
 
+  defp head_to_algebra([], state) do
+    {"", state}
+  end
   defp head_to_algebra(head, state) do
     {head, state} = Enum.map_reduce(head, state, &types_to_algebra/2)
-    {A.fold_doc(head, &A.glue(A.concat(&1, ","), &2)), state}
+    doc = A.fold_doc(head, &A.glue(A.concat(&1, ","), &2))
+    {A.concat(doc, " "), state}
   end
 
   defp clauses_to_algebra(clauses, state) do
@@ -147,7 +152,7 @@ defmodule Types.Union do
       Enum.map_reduce(clauses, state, fn {head, body}, state ->
         {head, state} = head_to_algebra(head, state)
         {body, state} = types_to_algebra(body, state)
-        {A.nest(A.glue(A.concat(head, " ->"), body), 2), state}
+        {A.nest(A.glue(A.concat(head, "->"), body), 2), state}
       end)
     {A.fold_doc(clauses, &A.glue(A.concat(&1, ";"), &2)), state}
   end
@@ -226,6 +231,7 @@ defmodule Types.Union do
 
   Calling the callback with each permutation and the arity.
   """
+  # TODO: Provide version without arity.
   def permute_args(args, arity, callback) do
     permute_args(args, [], arity, callback, [])
   end
@@ -250,7 +256,7 @@ defmodule Types.Union do
   given state and function.
 
   The function must return `{:ok, state}`,
-  `{:replace, type, state}` or `{:union, feedback, state}`.
+  `{:replace, feedback, state}` or `{:union, feedback, state}`.
   """
   def traverse(types, state, fun) do
     traverse(types, [], state, fun)
@@ -266,8 +272,8 @@ defmodule Types.Union do
             {{head, body}, state}
           end)
         traverse(types, [{:fn, clauses, inferred, arity} | acc], state, fun)
-      {:replace, type, state} ->
-        traverse(types, [type | acc], state, fun)
+      {:replace, replace, state} ->
+        traverse(types, replace ++ acc, state, fun)
     end
   end
   defp traverse([{:cons, left, right} = type | types], acc, state, fun) do
@@ -278,8 +284,8 @@ defmodule Types.Union do
             [left, right], _ -> {:cons, left, right}
           end)
         traverse(types, conses ++ acc, state, fun)
-      {:replace, type, state} ->
-        traverse(types, [type | acc], state, fun)
+      {:replace, replace, state} ->
+        traverse(types, replace ++ acc, state, fun)
     end
   end
   defp traverse([{:tuple, args, arity} = type | types], acc, state, fun) do
@@ -287,16 +293,16 @@ defmodule Types.Union do
       {:ok, state} ->
         {tuples, state} = traverse_and_permute(args, arity, state, fun, &{:tuple, &1, &2})
         traverse(types, tuples ++ acc, state, fun)
-      {:replace, type, state} ->
-        traverse(types, [type | acc], state, fun)
+      {:replace, replace, state} ->
+        traverse(types, replace ++ acc, state, fun)
     end
   end
   defp traverse([type | types], acc, state, fun) do
     case fun.(type, state) do
       {:ok, state} ->
         traverse(types, [type | acc], state, fun)
-      {:replace, type, state} ->
-        traverse(types, [type | acc], state, fun)
+      {:replace, replace, state} ->
+        traverse(types, replace ++ acc, state, fun)
       {:union, union, state} ->
         {types, state} = traverse(types, acc, state, fun)
         {union(union, types), state}
@@ -389,6 +395,8 @@ defmodule Types.Union do
 
   It returns one of :disjoint, :equal, :subset or :superset.
   """
+  # TODO: Reevaluate the use of subset given (fn :foo -> :foo end).(atom())
+  # is not guaranteed to match
   def qualify(left, right) do
     qualify(left, right, %{}, %{}) |> elem(0)
   end

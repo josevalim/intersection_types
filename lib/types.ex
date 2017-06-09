@@ -111,9 +111,14 @@ defmodule Types do
       type `(a -> b) ^ (b -> c)` which has a dependency between a body and
       a head variable.
 
-      In such cases, we infer the same type as in a Hindley-Milner system.
-      However, for expressions such as `{x.(:foo), x.(:bar)}`, we infer the
-      proper intersection type `(:bar -> a) ^ (:foo -> b)` expressed as
+      We don't infer the first case for simplicity when using the type
+      system. We don't infer the second because type checking those functions
+      are expensive and complex, as they require a permutation of all possible
+      clauses that could match `(a -> b) ^ (b -> c)`.
+
+      In those scenarios, we infer the same type as in a Hindley-Milnersystem.
+      For all others, such as `{x.(:foo), x.(:bar)}`, we infer the proper
+      intersection type `(:bar -> a) ^ (:foo -> b)` expressed as
       `(:bar -> a; :foo -> b)`. The recursive typing rules are also taken
       from this paper.
 
