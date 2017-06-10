@@ -19,6 +19,7 @@ defmodule Types.Union do
   # functions on this module:
   #
   #   traverse
+  #   vars
   #   qualify
   #   to_algebra
   #   supertype?
@@ -49,11 +50,22 @@ defmodule Types.Union do
   # the second clause will give them the distinct and generic types
   # a and b.
   #
-  # So it feels that, in this situation, the user needs to give the
-  # function an overall type that is checked against each clause or
-  # we need to explicitly tag the args for the first clause. This
-  # condition seems to be generalized to whenever the same type
-  # variable appears more than once in an argument position.
+  # Also note that this issue generally applies to any guard that
+  # may be added to the code.
+  #
+  # One solution to this problem is to always translate those cases
+  # to an applied case:
+  #
+  #     def same?(x, y) do
+  #       (fn
+  #         {a, a} -> true
+  #         {a, b} -> false
+  #       end).({x, y})
+  #     end
+  #
+  # where any runtime condition (such as matching vars and guards)
+  # imply the clause never matches fully and we need to move to
+  # exaust further clauses.
 
   alias Inspect.Algebra, as: A
 
@@ -169,6 +181,13 @@ defmodule Types.Union do
   end
 
   @doc """
+  Checks if two unions are the same.
+  """
+  def same?(old, new) do
+    old == new or :lists.sort(old) == :lists.sort(new)
+  end
+
+  @doc """
   Converts the given type AST to its inner type.
   """
   def ast_to_types(ast)
@@ -252,11 +271,49 @@ defmodule Types.Union do
   end
 
   @doc """
+  Reduces over the types and invokes fun on every var node.
+  """
+  def vars(types, state, fun) do
+    Enum.reduce(types, state, &vars_each(&1, &2, fun))
+  end
+
+  defp vars_each({:fn, clauses, _inferred, _arity}, acc, fun) do
+    Enum.reduce(clauses, acc, fn {head, body}, acc ->
+      acc = vars_args(head, acc, fun)
+      acc = vars(body, acc, fun)
+      acc
+    end)
+  end
+  defp vars_each({:cons, left, right}, acc, fun) do
+    acc = vars_each(left, acc, fun)
+    acc = vars_each(right, acc, fun)
+    acc
+  end
+  defp vars_each({:tuple, args, _arity}, acc, fun) do
+    vars(args, acc, fun)
+  end
+  defp vars_each({:var, _, _} = var, acc, fun) do
+    fun.(var, acc)
+  end
+  defp vars_each(_, acc, _fun) do
+    acc
+  end
+
+  @doc """
+  Reducers over the given arguments looking for vars.
+
+  Same as `vars/3` but goes through the list of arguments.
+  """
+  def vars_args(args, acc, fun) do
+    Enum.reduce(args, acc, &vars(&1, &2, fun))
+  end
+
+  @doc """
   Traverses types in a prewalk fashion with the
   given state and function.
 
-  The function must return `{:ok, state}`,
-  `{:replace, feedback, state}` or `{:union, feedback, state}`.
+  The function must return `{:ok, state}` or
+  `{:replace, replace, state}`.
   """
   def traverse(types, state, fun) do
     traverse(types, [], state, fun)
@@ -303,9 +360,6 @@ defmodule Types.Union do
         traverse(types, [type | acc], state, fun)
       {:replace, replace, state} ->
         traverse(types, replace ++ acc, state, fun)
-      {:union, union, state} ->
-        {types, state} = traverse(types, acc, state, fun)
-        {union(union, types), state}
     end
   end
   defp traverse([], acc, state, _fun) do

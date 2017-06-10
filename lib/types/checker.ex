@@ -298,7 +298,7 @@ defmodule Types.Checker do
           %{^counter => _} ->
             case Map.get(vars, counter, []) do
               [_ | _] = existing ->
-                {:union, bind(existing, only, vars), acc}
+                {:replace, bind(existing, only, vars), acc}
               _ ->
                 {:ok, acc}
             end
@@ -338,7 +338,7 @@ defmodule Types.Checker do
             catch
               :recursive -> {:ok, {unused, [counter | rec]}}
             else
-              {existing, acc} -> {:union, existing, acc}
+              {existing, acc} -> {:replace, existing, acc}
             end
           [] ->
             {:ok, {unused, rec}}
@@ -577,26 +577,26 @@ defmodule Types.Checker do
   end
 
   defp of_var_apply_recur(types, var_counter, var_applies, var_level, levels) do
-    Union.traverse_args(types, {[], []}, fn
+    Union.vars_args(types, {[], []}, fn
       {:var, _, ^var_counter}, {_, acc_levels} ->
-        {:ok, {:self, acc_levels}}
+        {:self, acc_levels}
       {:var, _, counter}, {acc_applies, acc_levels} when is_list(acc_applies) ->
         if counter in var_applies do
-          {:ok, {[counter | acc_applies], acc_levels}}
+          {[counter | acc_applies], acc_levels}
         else
           {level, _applies, deps} = Map.fetch!(levels, counter)
           cond do
             var_counter in deps ->
-              {:ok, {{:occurs, counter}, acc_levels}}
+              {{:occurs, counter}, acc_levels}
             level > var_level ->
-              {:ok, {acc_applies, [counter | acc_levels]}}
+              {acc_applies, [counter | acc_levels]}
             true ->
-              {:ok, {acc_applies, acc_levels}}
+              {acc_applies, acc_levels}
           end
         end
       _type, acc ->
-        {:ok, acc}
-    end) |> elem(1)
+        acc
+    end)
   end
 
   defp of_var_apply_unify(key, args, arity, inferred, recur) do
@@ -659,6 +659,17 @@ defmodule Types.Checker do
     of_var_apply_unify_equal(funs, args, inferred)
   end
 
+  # TODO: Do not support overlaping clauses.
+  #
+  # If we have a function with type:
+  #
+  #    (:foo -> :bar; atom -> binary())(atom())
+  #
+  # When passing an atom to it, which we don't know the value
+  # at compile-time, so may inflect that the response is binary()
+  # but, if the input is the atom `:foo`, it will actually be `:bar`!
+  # We need to either consider those cases by also considering the
+  # results of all subsets or not support overlapping clauses.
   defp of_var_apply_clauses(clauses, args, return, inferred) do
     {pre, pos} =
       Enum.split_while(clauses, fn {head, _} ->
@@ -669,6 +680,30 @@ defmodule Types.Checker do
 
   ### Fn Apply
 
+  # Applying functions require permutating all arguments and heads.
+  #
+  # Imagine the following function:
+  #
+  #     (x | integer(), x | atom() -> ...)
+  #
+  # Being applied with the arguments:
+  #
+  #     integer(), empty_list()
+  #
+  # If we bind the first x to integer(), the second argument will
+  # never bind. Therefore, we need to permutate and consider each
+  # possible condition in isolation:
+  #
+  #     (x, x -> ...)
+  #     (x, atom() -> ...)
+  #     (integer(), x -> ...)
+  #     (integer(), atom() -> ...)
+  #
+  # Where those particular arguments will bind on the third permutation.
+  #
+  # Because all arguments on the right-side need to match, permutation
+  # may not be required on the right side, but we permute those anyway
+  # for code simplicity.
   defp of_fn_apply(clauses, clauses_inferred, meta, args, inferred) do
     inferred = Map.merge(inferred, clauses_inferred)
 
@@ -690,22 +725,19 @@ defmodule Types.Checker do
     end
   end
 
-  # If we have matched all arguments and we haven't inferred anything new,
-  # it means they are literals and there is no need for an exhaustive search.
   defp of_fn_apply_each([arg | args], clauses, clauses_inferred, inferred, acc_inferred, acc_body) do
-    # TODO: Remove acc_inferred. It is being used as a fast check for changes.
+    # If the arguments are only literals, we don't need an exaustive search.
+    only_literals? = Union.vars(arg, true, fn _, _ -> false end)
+
     {match?, acc_inferred, acc_body} =
       Enum.reduce_while(clauses, {false, acc_inferred, acc_body},
         fn {head, body}, {_, acc_inferred, acc_body} = acc ->
           case unify_paired(head, arg, clauses_inferred, inferred, %{}) do
-            {:match, _, new_inferred} when new_inferred == %{} ->
-              acc_inferred = of_fn_apply_keep(new_inferred, acc_inferred)
-              acc_body = Union.union(acc_body, body)
-              {:halt, {true, acc_inferred, acc_body}}
             {:match, _, new_inferred} ->
               acc_inferred = of_fn_apply_keep(new_inferred, acc_inferred)
               acc_body = Union.union(acc_body, body)
-              {:cont, {true, acc_inferred, acc_body}}
+              next = if only_literals?, do: :halt, else: :cont
+              {next, {true, acc_inferred, acc_body}}
             _ ->
               {:cont, acc}
           end
@@ -830,7 +862,8 @@ defmodule Types.Checker do
       {_, {_, [{_, _, counter} = var]}}, {:ok, new_inferred} ->
         old = Map.get(old_inferred, counter, [])
         {new, new_inferred} = Map.pop(new_inferred, counter)
-        if old == [] or old == new do
+
+        if old == [] or Union.same?(old, new) do
           {:cont, {:ok, new_inferred}}
         else
           {:halt, {:error, var, old, new}}

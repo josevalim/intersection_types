@@ -307,6 +307,18 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn x :: atom() ->
         (fn :foo -> :bar; y :: atom() -> :baz end).(x)
       end) |> format() == "(atom() -> :baz)"
+
+      assert quoted_of(fn x ->
+        fn y :: boolean() ->
+          (fn {z, true} -> z; {:foo, false} -> false end).({x, y})
+        end
+      end) |> format() == "omg"
+
+      assert quoted_of(fn x ->
+        fn y :: boolean() ->
+          (fn {:foo, false} -> false; {z, true} -> z end).({x, y})
+        end
+      end) |> format() == "omg"
     end
 
     # TODO: Make this pass. See notes in union.ex.
