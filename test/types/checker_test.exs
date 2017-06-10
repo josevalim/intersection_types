@@ -262,6 +262,14 @@ defmodule Types.CheckerTest do
             z
           end).(x)
         end)
+
+      assert quoted_of(fn x ->
+          (fn {true, z} -> z end).({x, x})
+      end) |> format() == "(true -> true)"
+
+      assert quoted_of(fn x ->
+          (fn {z, true} -> z end).({x, x})
+      end) |> format() == "(true -> true)"
     end
 
     test "with inference on multiple clauses" do
@@ -277,7 +285,7 @@ defmodule Types.CheckerTest do
 
       assert quoted_of(fn x ->
         (fn false -> false; nil -> nil; _ -> true end).(x)
-      end) |> format() == "(a -> false | nil | true)"
+      end) |> format() == "(false | nil | a -> false | nil | true)"
 
       assert quoted_of(fn x ->
         (fn :foo -> :bar; y :: atom() -> :baz end).(x)
@@ -291,13 +299,13 @@ defmodule Types.CheckerTest do
         fn y :: boolean() ->
           (fn {z, true} -> z; {:foo, false} -> false end).({x, y})
         end
-      end) |> format() == "omg"
+      end) |> format() == "(a -> (false | true -> false | a)) when a: :foo | b"
 
       assert quoted_of(fn x ->
         fn y :: boolean() ->
           (fn {:foo, false} -> false; {z, true} -> z end).({x, y})
         end
-      end) |> format() == "omg"
+      end) |> format() == "(a -> (false | true -> false | a)) when a: :foo | b"
     end
 
     # TODO: Make this pass. See notes in union.ex.
@@ -791,7 +799,7 @@ defmodule Types.CheckerTest do
 
     test "multiple clauses" do
       assert quoted_of(fn false -> false; nil -> nil; _ -> true end) |> format() ==
-             "(a -> false | nil | true)"
+             "(false -> false; nil -> nil; a -> true)"
     end
 
     test "bindings" do
@@ -887,8 +895,6 @@ defmodule Types.CheckerTest do
   end
 
   describe "of/1 recur" do
-    # TODO: Handle return results
-
     test "single variable recursive tuples" do
       # Free variables
       assert quoted_of(recur = fn
@@ -924,8 +930,16 @@ defmodule Types.CheckerTest do
           num
       end) |> format() == "({:+, integer()} -> integer(); integer() -> integer())"
 
+      # Untyped variable
+      assert quoted_of(recur = fn
+        {:+, num} ->
+          recur(num)
+        num ->
+          num
+      end) |> format() == "({:+, a} -> b; b -> b) when a: {:+, a} | b"
+
       # Disjoint input
-      assert {:error, _, _} =
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of(recur = fn
                {:+, num} ->
                  (fn x :: atom() -> x end).(num)
@@ -935,7 +949,7 @@ defmodule Types.CheckerTest do
              end)
 
       # Disjoint output
-      assert {:error, _, _} =
+      assert {:error, _, {:recur_return, _, _}} =
              quoted_of(recur = fn
                {:+, num} ->
                  (fn x :: atom() -> x end).(recur(num))

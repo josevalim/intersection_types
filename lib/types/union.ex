@@ -190,6 +190,10 @@ defmodule Types.Union do
   @doc """
   Converts the given type AST to its inner type.
   """
+  # TODO: Once we support variables and functions
+  # and so on here, we need to make sure those
+  # features are not accessible from :: patterns
+  # on the actual code.
   def ast_to_types(ast)
 
   def ast_to_types({:|, _, [left, right]}) do
