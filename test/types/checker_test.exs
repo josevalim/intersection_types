@@ -280,27 +280,6 @@ defmodule Types.CheckerTest do
       end) |> format() == "(a -> false | nil | true)"
 
       assert quoted_of(fn x ->
-        a = (fn false -> false; nil -> nil; _ -> true end).(x)
-        b = (fn y -> y end).(x)
-        c = x
-        {a, b, c}
-      end) |> format() == "(a -> {false, a, a} | {nil, a, a} | {true, a, a})"
-
-      assert quoted_of(fn x ->
-        a = (fn true -> false; y -> y end).(x)
-        b = (fn z -> z end).(x)
-        c = x
-        {a, b, c}
-      end) |> format() == "(a -> {false, a, a} | {a, a, a})"
-
-      assert quoted_of(fn x ->
-        a = (fn true -> false; y -> y end).(x)
-        b = (fn false -> false end).(x)
-        c = x
-        {a, b, c}
-      end) |> format() == "(false -> {false, false, false})"
-
-      assert quoted_of(fn x ->
         (fn :foo -> :bar; y :: atom() -> :baz end).(x)
       end) |> format() == "(atom() -> :bar | :baz)"
 
@@ -477,7 +456,7 @@ defmodule Types.CheckerTest do
           {x.(:foo), x.(:bar), x.(:baz)}
         end).(fn :foo -> :x; :bar -> :y end))
 
-      # Support multiple bindings
+      # Supertype
       assert quoted_of((fn x ->
           {x.(:foo), x.(:bar), x.(:baz)}
         end).(fn y :: atom() -> y end)
@@ -511,49 +490,49 @@ defmodule Types.CheckerTest do
 
       # First element
       assert quoted_of((fn {y, x} ->
-          {x.({:ok, y}), x.({:ok, y}), x.({:error, y}), x.({:error, y})}
+          {x.({:ok, y}), x.({:error, y})}
         end).({true, fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end})
-      ) |> format() == "{true, true, :error, :error}"
+      ) |> format() == "{true, :error}"
 
       assert quoted_of(fn z ->
         (fn {y, x} ->
-          {x.({:ok, y}), x.({:ok, y}), x.({:error, y}), x.({:error, y})}
+          {x.({:ok, y}), x.({:error, y})}
         end).({z, fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end})
-      end) |> format() == "(a -> {a, a, :error, :error}) when a: false | true"
+      end) |> format() == "(a -> {a, :error}) when a: false | true"
 
       assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of((fn {y, x} ->
-                 {x.({:ok, y}), x.({:ok, y}), x.({:error, y}), x.({:error, y})}
+                 {x.({:ok, y}), x.({:error, y})}
                end).({:other, fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end}))
 
       # Second element
       assert quoted_of((fn {x, y} ->
-          {x.({:ok, y}), x.({:ok, y}), x.({:error, y}), x.({:error, y})}
+          {x.({:ok, y}), x.({:error, y})}
         end).({fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end, true})
-      ) |> format() == "{true, true, :error, :error}"
+      ) |> format() == "{true, :error}"
 
       assert quoted_of(fn z ->
         (fn {x, y} ->
-          {x.({:ok, y}), x.({:ok, y}), x.({:error, y}), x.({:error, y})}
+          {x.({:ok, y}), x.({:error, y})}
         end).({fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end, z})
-      end) |> format() == "{true, true, :error, :error}"
+      end) |> format() == "{true, :error}"
 
       assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of((fn {x, y} ->
-                 {x.({:ok, y}), x.({:ok, y}), x.({:error, y}), x.({:error, y})}
+                 {x.({:ok, y}), x.({:error, y})}
                end).({fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end, :error}))
     end
 
     test "on intersection types with free variables" do
       assert quoted_of(fn z ->
-          (fn x -> {x.({:foo, z}), x.({:bar, z})} end).
-          (fn {:foo, :ok} -> :bar; {:bar, :ok} -> :foo end)
+          (fn x -> {x.({:ok, z}), x.({:error, z})} end).
+          (fn {:ok, :ok} -> :bar; {:error, :ok} -> :foo end)
         end) |> format() == "(:ok -> {:bar, :foo})"
 
       assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of(fn z ->
-               (fn x -> {x.({:foo, z}), x.({:bar, z})} end).
-               (fn {:foo, :ok} -> :bar; {:bar, :error} -> :foo end)
+               (fn x -> {x.({:ok, z}), x.({:error, z})} end).
+               (fn {:ok, :ok} -> :bar; {:error, :error} -> :foo end)
              end)
     end
 
@@ -714,24 +693,6 @@ defmodule Types.CheckerTest do
       end) |> format() == "(integer() -> integer())"
     end
 
-    test "bidirectional matching" do
-      assert quoted_of(fn z ->
-        {:ok, x} = (fn y -> {y, :error} end).(z)
-        {z, x}
-      end) |> format() == "(:ok -> {:ok, :error})"
-
-      assert quoted_of(fn z ->
-        {:ok, x} = (fn y -> {y, :error} end).(z)
-      end) |> format() == "(:ok -> {:ok, :error})"
-    end
-
-    test "bidirectional matching with multiple clauses" do
-      assert quoted_of(fn z ->
-        {x, y} = (fn true -> {true, :foo}; false -> {false, :bar} end).(z)
-        {y, x}
-      end) |> format() == "(false | true -> {:bar, false} | {:bar, true} | {:foo, false} | {:foo, true})"
-    end
-
     test "free variables" do
       assert quoted_of(fn x -> x end) |> format() ==
              "(a -> a)"
@@ -786,6 +747,7 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn x -> {x.(:foo).(:baz), x.(:bar).(:bat)} end) |> format() ==
              "((:bar -> (:bat -> a); :foo -> (:baz -> b)) -> {b, a})"
 
+      # With supertypes
       assert quoted_of(fn x ->
         z = (fn z :: atom() -> z end).(:bar)
         {x.(:foo), x.(z)}
@@ -825,6 +787,11 @@ defmodule Types.CheckerTest do
 
       assert quoted_of(fn x, y -> {x.(y), y.(x)} end) |> format() ==
              "((a -> b), (c -> d) -> {b, d}) when c: ((c -> d) -> b), a: ((a -> b) -> d)"
+    end
+
+    test "multiple clauses" do
+      assert quoted_of(fn false -> false; nil -> nil; _ -> true end) |> format() ==
+             "(a -> false | nil | true)"
     end
 
     test "bindings" do
