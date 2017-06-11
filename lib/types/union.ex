@@ -371,25 +371,26 @@ defmodule Types.Union do
   end
 
   defp traverse_and_permute(args, arity, state, fun, callback) do
-    case traverse_with_equality_check(args, [], true, state, fun) do
-      {true, state} -> {[callback.(args, arity)], state}
-      {args, state} -> {permute_args(args, arity, callback), state}
+    case traverse_with_single_check(args, [], [], state, fun) do
+      {:single, args, state} -> {[callback.(args, arity)], state}
+      {:permute, args, state} -> {permute_args(args, arity, callback), state}
     end
   end
 
-  defp traverse_with_equality_check([type | types], acc, all_equal?, state, fun) do
+  # This function is an optimization so we don't permute unless we have to.
+  defp traverse_with_single_check([type | types], acc, single, state, fun) do
     case traverse([type], [], state, fun) do
-      {[^type] = new, state} ->
-        traverse_with_equality_check(types, [new | acc], all_equal?, state, fun)
+      {[type] = new, state} when is_list(single) ->
+        traverse_with_single_check(types, [new | acc], [type | single], state, fun)
       {new, state} ->
-        traverse_with_equality_check(types, [new | acc], false, state, fun)
+        traverse_with_single_check(types, [new | acc], false, state, fun)
     end
   end
-  defp traverse_with_equality_check([], _acc, true, state, _fun) do
-    {true, state}
+  defp traverse_with_single_check([], _acc, single, state, _fun) when is_list(single) do
+    {:single, :lists.reverse(single), state}
   end
-  defp traverse_with_equality_check([], acc, false, state, _fun) do
-    {:lists.reverse(acc), state}
+  defp traverse_with_single_check([], acc, _single, state, _fun) do
+    {:permute, :lists.reverse(acc), state}
   end
 
   @doc """

@@ -193,9 +193,6 @@ defmodule Types.CheckerTest do
       assert quoted_of((fn y :: atom() -> y end).(:foo)) |> format() ==
              ":foo"
 
-      assert quoted_of((fn :foo -> :bar; y :: atom() -> :baz end).(:foo)) |> format() ==
-             ":bar"
-
       assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of(fn x :: atom() -> (fn :foo -> :foo end).(x) end)
 
@@ -287,13 +284,17 @@ defmodule Types.CheckerTest do
         (fn false -> false; nil -> nil; _ -> true end).(x)
       end) |> format() == "(false | nil | a -> false | nil | true)"
 
+      assert quoted_of(fn x :: :foo ->
+        (fn :foo -> :bar; y :: atom() -> :baz end).(x)
+      end) |> format() == "(:foo -> :bar)"
+
       assert quoted_of(fn x ->
         (fn :foo -> :bar; y :: atom() -> :baz end).(x)
       end) |> format() == "(atom() -> :bar | :baz)"
 
       assert quoted_of(fn x :: atom() ->
         (fn :foo -> :bar; y :: atom() -> :baz end).(x)
-      end) |> format() == "(atom() -> :baz)"
+      end) |> format() == "(atom() -> :bar -> :baz)"
 
       assert quoted_of(fn x ->
         fn y :: boolean() ->
@@ -869,6 +870,17 @@ defmodule Types.CheckerTest do
       assert quoted_of((fn x -> fn y -> x.(x.(y)) end end).
                        (fn :foo -> :foo; :bar -> :bar end)) |> elem(1) ==
              [{:fn, [{[[{:var, {:y, nil}, 1}]], [{:var, {:y, nil}, 1}]}], %{}, 1}]
+
+      assert quoted_of(recur = fn {:+, num} -> recur(num); num -> num end) |> elem(1) ==
+             [{:fn,
+               [{[[{:tuple, [{:atom, :+}, {:var, {:num, nil}, 0}], 2}]],
+                 [{:var, {:apply, Types.Checker}, 3}]},
+                {[[{:var, {:num, nil}, 2}]],
+                 [{:var, {:num, nil}, 2}]}],
+              %{0 => [{:tuple, [{:atom, :+}, {:var, {:num, nil}, 0}], 2},
+                      {:var, {:apply, Types.Checker}, 3}],
+                2 => [],
+                3 => []}, 1}]
     end
   end
 
@@ -936,7 +948,14 @@ defmodule Types.CheckerTest do
           recur(num)
         num ->
           num
-      end) |> format() == "({:+, a} -> b; b -> b) when a: {:+, a} | b"
+      end) |> format() == "({:+, a} -> b; c -> c) when a: {:+, a} | b"
+
+      assert quoted_of(recur = fn
+        {:+, num} ->
+          recur(num)
+        {:-, num} ->
+          num
+      end) |> format() == "({:+, a} -> b; c -> c) when a: {:+, a} | b"
 
       # Disjoint input
       assert {:error, _, {:disjoint_apply, _, _, _}} =
