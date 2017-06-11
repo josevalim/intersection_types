@@ -1000,5 +1000,26 @@ defmodule Types.CheckerTest do
                           "when a: integer() | {:+, a} | {:-, c}, b: integer() | {:+, b} | {:-, d}, " <>
                                "c: integer() | {:+, a} | {:-, c}, d: integer() | {:+, b} | {:-, d}"
     end
+
+    test "applied on intersection type" do
+      assert quoted_of((fn x ->
+        {x.({:-, :one}), x.({:+, {:-, :two}}), x.({:+, {:+, {:-, :three}}})}
+      end).(recur = fn
+        {:+, num} ->
+          recur(num)
+        {:-, num} ->
+          num
+      end)) |> format() == "{:one, :two, :three}"
+
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+             quoted_of((fn x ->
+               x.({:+, :error})
+             end).(recur = fn
+               {:+, num} ->
+                 recur(num)
+               {:-, num} ->
+                 num
+             end))
+    end
   end
 end

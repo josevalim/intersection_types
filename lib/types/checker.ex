@@ -1094,7 +1094,7 @@ defmodule Types.Checker do
             [] ->
               {:ok, state}
             other ->
-              {other, state} = of_recur_bind(other, free, vars, state)
+              {other, state} = of_recur_bind_inferred_free_vars(other, free, vars, state)
               {:replace, other, state}
           end
         else

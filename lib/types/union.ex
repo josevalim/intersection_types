@@ -34,6 +34,13 @@ defmodule Types.Union do
   # variable exists. Variables on the right side must appear
   # on the left side before.
   #
+  # Another restriction is that multiple clauses can only
+  # share variables in the body, however this restriction is
+  # broken with recursive functions. TODO: We need to carefully
+  # consider how this impacts the code and if we are going to
+  # allow users to express those types. Maybe it shuold only
+  # be possible if the recursion is at the top level function.
+  #
   # ## Function code parsing.
   #
   # What is the type of:
