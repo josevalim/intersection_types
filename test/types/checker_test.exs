@@ -294,6 +294,10 @@ defmodule Types.CheckerTest do
 
       assert quoted_of(fn x :: atom() ->
         (fn :foo -> :bar; y :: atom() -> :baz end).(x)
+      end) |> format() == "(atom() -> :bar | :baz)"
+
+      assert quoted_of(fn x :: atom() ->
+        (fn y :: boolean() -> :bar; z :: atom() -> :baz end).(x)
       end) |> format() == "(atom() -> :bar -> :baz)"
 
       assert quoted_of(fn x ->

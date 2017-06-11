@@ -727,7 +727,7 @@ defmodule Types.Checker do
   defp of_fn_apply_each([arg | args], clauses, fn_inferred,
                         inferred, acc_inferred, state, return) do
     # If the arguments are only literals, we don't need an exaustive search.
-    only_literals? = Union.vars(arg, true, fn _, _ -> false end)
+    only_non_supertypes? = of_fn_apply_only_non_supertypes?(arg, inferred)
 
     {match?, acc_inferred, state, return} =
       # TODO: Support subset matches once again.
@@ -737,7 +737,7 @@ defmodule Types.Checker do
             {:match, _, new_inferred} ->
               {acc_inferred, state} = of_fn_apply_keep(new_inferred, acc_inferred, state)
               return = Union.union(return, body)
-              next = if only_literals?, do: :halt, else: :cont
+              next = if only_non_supertypes?, do: :halt, else: :cont
               {next, {true, acc_inferred, state, return}}
             _ ->
               {:cont, acc}
@@ -752,6 +752,12 @@ defmodule Types.Checker do
   end
   defp of_fn_apply_each([], _clauses, _fn_inferred, inferred, acc_inferred, state, return) do
     {:ok, return, %{state | inferred: Map.merge(inferred, acc_inferred)}}
+  end
+
+  defp of_fn_apply_only_non_supertypes?(arg, inferred) do
+    Union.vars(arg, true, fn {_, _, counter}, acc ->
+      acc and not Union.supertype?(Map.get(inferred, counter, []))
+    end)
   end
 
   # If the variable has an empty union type, it means it
