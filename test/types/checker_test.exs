@@ -955,7 +955,7 @@ defmodule Types.CheckerTest do
           recur(num)
         {:-, num} ->
           num
-      end) |> format() == "({:+, a} -> b; c -> c) when a: {:+, a} | b"
+      end) |> format() == "({:+, a} -> b; {:-, b} -> b) when a: {:+, a} | {:-, b}"
 
       # Disjoint input
       assert {:error, _, {:disjoint_apply, _, _, _}} =

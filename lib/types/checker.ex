@@ -313,7 +313,7 @@ defmodule Types.Checker do
     end) |> elem(0)
   end
 
-  # Similar to bind but checks exclusively for current levels.
+  # Similar to bind but binds based on the variable level.
   defp bind_level(types, unused, vars, level, levels) do
     bind_level_traverse(types, {unused, []}, vars, level, levels)
   end
@@ -658,8 +658,6 @@ defmodule Types.Checker do
     of_var_apply_unify_equal(funs, args, inferred)
   end
 
-  # TODO: Do not support overlaping clauses.
-  #
   # If we have a function with type:
   #
   #    (:foo -> :bar; atom -> binary())(atom())
@@ -1063,7 +1061,7 @@ defmodule Types.Checker do
       %{inferred: inferred, counter: acc_counter} = state
       keys = of_recur_keys(counter, acc_counter, keys)
 
-      right_return = bind(right_return, Map.take(inferred, free), inferred)
+      {right_return, state} = of_recur_bind_inferred_free_vars(right_return, free, inferred, state)
       case unify(left_return, right_return, clause_inferred, inferred, inferred) do
         {:match, _, inferred} ->
           clause_inferred = Map.take(inferred, keys)
@@ -1083,6 +1081,28 @@ defmodule Types.Checker do
   end
   defp of_recur_keys(pre_counter, counter, keys) do
     Enum.to_list(pre_counter+1..counter) ++ keys
+  end
+
+  defp of_recur_bind_inferred_free_vars(types, [], _vars, state) do
+    {types, state}
+  end
+  defp of_recur_bind_inferred_free_vars(types, free, vars, state) do
+    Union.traverse(types, state, fn
+      {:var, _, counter}, state ->
+        if counter in free do
+          case Map.get(vars, counter, []) do
+            [] ->
+              {:ok, state}
+            other ->
+              {other, state} = of_recur_bind(other, free, vars, state)
+              {:replace, other, state}
+          end
+        else
+          {:ok, state}
+        end
+      _, state ->
+        {:ok, state}
+    end)
   end
 
   ## Blocks
