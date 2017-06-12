@@ -253,7 +253,7 @@ defmodule Types.Union do
     end
   end
   defp permute_args_to_types([], acc, arity, callback) do
-    {:ok, permute_args(:lists.reverse(acc), arity, callback)}
+    {:ok, permute_args(:lists.reverse(acc), fn arg -> callback.(arg, arity) end)}
   end
 
   @doc """
@@ -261,23 +261,22 @@ defmodule Types.Union do
 
   Calling the callback with each permutation and the arity.
   """
-  # TODO: Provide version without arity.
-  def permute_args(args, arity, callback) do
-    permute_args(args, [], arity, callback, [])
+  def permute_args(args, callback) do
+    permute_args(args, [], callback, [])
   end
 
-  defp permute_args([pivot | pivots], call, arity, callback, acc) do
-    permute_args(pivot, pivots, call, arity, callback, acc)
+  defp permute_args([pivot | pivots], call, callback, acc) do
+    permute_args(pivot, pivots, call, callback, acc)
   end
-  defp permute_args([], call, arity, callback, acc) do
-    [callback.(:lists.reverse(call), arity) | acc]
+  defp permute_args([], call, callback, acc) do
+    [callback.(:lists.reverse(call)) | acc]
   end
 
-  defp permute_args([arg | args], pivots, call, arity, callback, acc) do
-    acc = permute_args(pivots, [arg | call], arity, callback, acc)
-    permute_args(args, pivots, call, arity, callback, acc)
+  defp permute_args([arg | args], pivots, call, callback, acc) do
+    acc = permute_args(pivots, [arg | call], callback, acc)
+    permute_args(args, pivots, call, callback, acc)
   end
-  defp permute_args([], _pivots, _call, _arity, _callback, acc) do
+  defp permute_args([], _pivots, _call, _callback, acc) do
     acc
   end
 
@@ -348,8 +347,8 @@ defmodule Types.Union do
     case fun.(type, state) do
       {:ok, state} ->
         {conses, state} =
-          traverse_and_permute([left, right], 2, state, fun, fn
-            [left, right], _ -> {:cons, left, right}
+          traverse_and_permute([left, right], state, fun, fn
+            [left, right] -> {:cons, left, right}
           end)
         traverse(types, conses ++ acc, state, fun)
       {:replace, replace, state} ->
@@ -359,7 +358,7 @@ defmodule Types.Union do
   defp traverse([{:tuple, args, arity} = type | types], acc, state, fun) do
     case fun.(type, state) do
       {:ok, state} ->
-        {tuples, state} = traverse_and_permute(args, arity, state, fun, &{:tuple, &1, &2})
+        {tuples, state} = traverse_and_permute(args, state, fun, &{:tuple, &1, arity})
         traverse(types, tuples ++ acc, state, fun)
       {:replace, replace, state} ->
         traverse(types, replace ++ acc, state, fun)
@@ -377,10 +376,10 @@ defmodule Types.Union do
     {:lists.reverse(acc), state}
   end
 
-  defp traverse_and_permute(args, arity, state, fun, callback) do
+  defp traverse_and_permute(args, state, fun, callback) do
     case traverse_with_single_check(args, [], [], state, fun) do
-      {:single, args, state} -> {[callback.(args, arity)], state}
-      {:permute, args, state} -> {permute_args(args, arity, callback), state}
+      {:single, args, state} -> {[callback.(args)], state}
+      {:permute, args, state} -> {permute_args(args, callback), state}
     end
   end
 

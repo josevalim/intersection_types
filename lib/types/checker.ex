@@ -129,13 +129,12 @@ defmodule Types.Checker do
                   keep, vars, acc_vars) do
     lefties =
       for {head, body} <- lefties do
-        permuted = Union.permute_args(head, arity, fn head, _ -> head end)
+        permuted = Union.permute_args(head, & &1)
         {permuted, body}
       end
 
     righties =
-      for {head, body} <- righties,
-          permuted <- Union.permute_args(head, arity, fn head, _ -> head end) do
+      for {head, body} <- righties, permuted <- Union.permute_args(head, & &1) do
         {permuted, body}
       end
 
@@ -706,15 +705,13 @@ defmodule Types.Checker do
     %{inferred: inferred} = state
     inferred = Map.merge(inferred, fn_inferred)
 
-    # TODO: Refactor shared permutation logic
     permuted_clauses =
-      for {head, body} <- clauses,
-          permuted <- Union.permute_args(head, 0, fn head, _ -> head end) do
+      for {head, body} <- clauses, permuted <- Union.permute_args(head, & &1) do
         {permuted, body}
       end
 
     permuted_args =
-      Union.permute_args(args, 0, fn args, _ -> args end)
+      Union.permute_args(args, & &1)
 
     case of_fn_apply_each(permuted_args, permuted_clauses, fn_inferred, inferred, %{}, state, []) do
       {:ok, _, _} = ok ->
@@ -726,11 +723,10 @@ defmodule Types.Checker do
 
   defp of_fn_apply_each([arg | args], clauses, fn_inferred,
                         inferred, acc_inferred, state, return) do
-    # If the arguments are only literals, we don't need an exaustive search.
+    # If the arguments are have no supertypes, we don't need an exaustive search.
     only_non_supertypes? = of_fn_apply_only_non_supertypes?(arg, inferred)
 
     {match?, acc_inferred, state, return} =
-      # TODO: Support subset matches once again.
       Enum.reduce_while(clauses, {false, acc_inferred, state, return},
         fn {head, body}, {_, acc_inferred, state, return} = acc ->
           case unify_paired(head, arg, fn_inferred, inferred, %{}) do
@@ -1244,32 +1240,26 @@ defmodule Types.Checker do
     ok([:empty_list], state)
   end
   defp literal([{:|, _, [left, right]}], state, fun) do
-    with {:ok, args, arity, state} <- args([left, right], state, fun) do
-      types =
-        Union.permute_args(args, arity, fn [left, right], _arity ->
-          {:cons, left, right}
-        end)
+    with {:ok, args, _arity, state} <- args([left, right], state, fun) do
+      types = Union.permute_args(args, fn [left, right] -> {:cons, left, right} end)
       ok(types, state)
     end
   end
   defp literal([left | right], state, fun) do
-    with {:ok, args, arity, state} <- args([left, right], state, fun) do
-      types =
-        Union.permute_args(args, arity, fn [left, right], _arity ->
-          {:cons, left, right}
-        end)
+    with {:ok, args, _arity, state} <- args([left, right], state, fun) do
+      types = Union.permute_args(args, fn [left, right] -> {:cons, left, right} end)
       ok(types, state)
     end
   end
   defp literal({left, right}, state, fun) do
     with {:ok, args, arity, state} <- args([left, right], state, fun) do
-      types = Union.permute_args(args, arity, &{:tuple, &1, &2})
+      types = Union.permute_args(args, &{:tuple, &1, arity})
       ok(types, state)
     end
   end
   defp literal({:{}, _, args}, state, fun) do
     with {:ok, args, arity, state} <- args(args, state, fun) do
-      types = Union.permute_args(args, arity, &{:tuple, &1, &2})
+      types = Union.permute_args(args, &{:tuple, &1, arity})
       ok(types, state)
     end
   end
