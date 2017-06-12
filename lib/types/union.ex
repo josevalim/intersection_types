@@ -429,7 +429,7 @@ defmodule Types.Union do
     case qualify(left, right) do
       :disjoint -> union(left, righties, temp_left, [right | temp_right], acc)
       :subset -> union(temp_left, temp_right ++ [right | righties], acc)
-      _ -> union(temp_left, temp_right ++ righties, [left | acc])
+      _ -> union(left, righties, temp_left, temp_right, acc)
     end
   end
   defp union(left, [], temp_left, temp_right, acc) do
@@ -440,7 +440,7 @@ defmodule Types.Union do
     case qualify(left, right) do
       :disjoint -> union_add(left, righties, [right | acc])
       :subset -> acc ++ [right | righties]
-      _ -> acc ++ [left | righties]
+      _ -> union_add(left, righties, acc)
     end
   end
   defp union_add(left, [], acc) do

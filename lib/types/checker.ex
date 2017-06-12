@@ -30,31 +30,85 @@ defmodule Types.Checker do
   `acc_vars` will keep unifying information for all clauses.
   """
   # TODO: Include error reason every time unification fails.
+
+  # This function returns:
+  #
+  #   * a :match tuple if all elements on the right side have
+  #     a match on the left side.
+  #   * a :subset tuple if some elements on the right side have
+  #     matched.
+  #   * a :disjoint tuple if there are no matches
   def unify(left, right, keep, vars, acc_vars) do
     unify(left, right, keep, vars, acc_vars, [], true)
   end
 
-  defp unify([left | lefties], righties, keep, vars, acc_vars, matched, matched?) do
-    unify(left, righties, keep, vars, acc_vars, lefties, righties, matched, matched?)
+  defp unify(lefties, [right | righties], keep, vars, acc_vars, matched, matched?) do
+    unify(lefties, right, keep, vars, acc_vars, lefties, righties, matched, [], matched?)
   end
-  defp unify([], _righties, _keep, _vars, acc_vars, matched, true) do
+  defp unify(_lefties, [], _keep, _vars, acc_vars, matched, true) do
     {:match, matched, acc_vars}
   end
-  defp unify([], _righties, _keep, _vars, acc_vars, matched, false) do
-    {:disjoint, matched, acc_vars}
+  defp unify(_lefties, [], _keep, _vars, acc_vars, [], false) do
+    {:disjoint, [], acc_vars}
+  end
+  defp unify(_lefties, [], _keep, _vars, acc_vars, matched, false) do
+    {:subset, matched, acc_vars}
   end
 
-  defp unify(left, [type | types], keep, vars, acc_vars, lefties, righties, matched, matched?) do
-    case unify_each(left, type, keep, vars, acc_vars) do
+  defp unify([type | types], right, keep, vars, acc_vars, lefties, righties, matched, subset, matched?) do
+    case unify_each(type, right, keep, vars, acc_vars) do
       {:match, acc_vars} ->
-        unify(left, types, keep, vars, acc_vars, lefties, righties, [type | matched], matched?)
+        unify(lefties, righties, keep, vars, acc_vars, [right | matched], matched?)
+      {:subset, acc_vars} ->
+        unify(types, right, keep, vars, acc_vars, lefties, righties, matched, [type | subset], matched?)
       :disjoint ->
-        unify(left, types, keep, vars, acc_vars, lefties, righties, matched, false)
+        unify(types, right, keep, vars, acc_vars, lefties, righties, matched, subset, matched?)
     end
   end
-  defp unify(_left, [], keep, vars, acc_vars, lefties, righties, matched, matched?) do
-    unify(lefties, righties, keep, vars, acc_vars, matched, matched?)
+  defp unify([], _right, keep, vars, acc_vars, lefties, righties, matched, subset, _matched?) do
+    unify(lefties, righties, keep, vars, acc_vars, subset ++ matched, false)
   end
+
+  ## UNIFY VARS
+
+  # This is used when unifying two vars.
+  #
+  # When unifying vars, we want to find all types on the
+  # right side that match the left side. If some types do
+  # not match, that's ok.
+  #
+  # This function returns `{:match, matched, vars}` if all
+  # matched were full matches and `{:subset, matched, vars}`
+  # if one or more matched were subsets.
+  def unify_vars(left, right, keep, vars, acc_vars) do
+    unify_vars(left, right, keep, vars, acc_vars, [], :match)
+  end
+
+  defp unify_vars(lefties, [right | righties], keep, vars, acc_vars, matched, kind) do
+    unify_vars(lefties, right, keep, vars, acc_vars, lefties, righties, matched, [], kind)
+  end
+  defp unify_vars(_lefties, [], _keep, _vars, acc_vars, matched, kind) do
+    {kind, matched, acc_vars}
+  end
+
+  defp unify_vars([type | types], right, keep, vars, acc_vars, lefties, righties, matched, subset, kind) do
+    case unify_each(type, right, keep, vars, acc_vars) do
+      {:match, acc_vars} ->
+        unify_vars(lefties, righties, keep, vars, acc_vars, [right | matched], kind)
+      {:subset, acc_vars} ->
+        unify_vars(types, right, keep, vars, acc_vars, lefties, righties, matched, [type | subset], kind)
+      :disjoint ->
+        unify_vars(types, right, keep, vars, acc_vars, lefties, righties, matched, subset, kind)
+    end
+  end
+  defp unify_vars([], _right, keep, vars, acc_vars, lefties, righties, matched, [], kind) do
+    unify_vars(lefties, righties, keep, vars, acc_vars, matched, kind)
+  end
+  defp unify_vars([], _right, keep, vars, acc_vars, lefties, righties, matched, subset, _kind) do
+    unify_vars(lefties, righties, keep, vars, acc_vars, subset ++ matched, :subset)
+  end
+
+  ## UNIFY EACH
 
   defp unify_each(type, type, _keep, _vars, acc_vars) do
     {:match, acc_vars}
@@ -81,13 +135,13 @@ defmodule Types.Checker do
         end
 
       {left_value, right_value} ->
-        with {_, [_ | _] = match, acc_vars} <-
-               unify(left_value, right_value, keep, vars, acc_vars) do
+        with {kind, [_ | _] = match, acc_vars} <-
+               unify_vars(left_value, right_value, keep, vars, acc_vars) do
           acc_vars =
             acc_vars
             |> Map.update(key1, match, &Union.union(&1 -- left_value, match))
             |> Map.update(key2, match, &Union.union(&1 -- right_value, match))
-          {:match, acc_vars}
+          {kind, acc_vars}
         else
           _ -> :disjoint
         end
@@ -99,10 +153,10 @@ defmodule Types.Checker do
       [] ->
         {:match, Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
       value ->
-        case unify(value, [type], keep, vars, acc_vars) do
-          {_, [_ | _] = match, acc_vars} ->
+        case unify_vars(value, [type], keep, vars, acc_vars) do
+          {kind, [_ | _] = match, acc_vars} ->
             acc_vars = Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))
-            {:match, acc_vars}
+            {kind, acc_vars}
           _ ->
             :disjoint
         end
@@ -115,10 +169,10 @@ defmodule Types.Checker do
       [] ->
         {:match, Map.update(acc_vars, key, [type], &Union.union(&1, [type]))}
       value ->
-        case unify([type], value, keep, vars, acc_vars) do
-          {_, [_ | _] = match, acc_vars} ->
+        case unify_vars([type], value, keep, vars, acc_vars) do
+          {kind, [_ | _] = match, acc_vars} ->
             acc_vars = Map.update(acc_vars, key, match, &Union.union(&1 -- value, match))
-            {:match, acc_vars}
+            {kind, acc_vars}
           _ ->
             :disjoint
         end
@@ -148,28 +202,18 @@ defmodule Types.Checker do
   end
 
   defp unify_each({:cons, left1, right1}, {:cons, left2, right2}, keep, vars, acc_vars) do
-    case unify_paired([left1, right1], [left2, right2], keep, vars, acc_vars) do
-      {:match, _, acc_vars} ->
-        {:match, acc_vars}
-      :disjoint ->
-        :disjoint
-    end
+    unify_paired([left1, right1], [left2, right2], keep, vars, acc_vars)
   end
 
   defp unify_each({:tuple, lefties, arity}, {:tuple, righties, arity}, keep, vars, acc_vars) do
-    case unify_paired(lefties, righties, keep, vars, acc_vars) do
-      {:match, _, acc_vars} ->
-        {:match, acc_vars}
-      :disjoint ->
-        :disjoint
-    end
+    unify_paired(lefties, righties, keep, vars, acc_vars)
   end
 
   defp unify_each(left, right, _keep, _vars, acc_vars) do
     case Union.qualify(left, right) do
       :equal -> {:match, acc_vars}
       :superset -> {:match, acc_vars}
-      :subset -> :disjoint
+      :subset -> {:subset, acc_vars}
       :disjoint -> :disjoint
     end
   end
@@ -229,16 +273,18 @@ defmodule Types.Checker do
     #
     match =
       Enum.find_value(left_heads, fn left_head ->
+        # TODO: Consider how subsets matter here.
         case unify_paired(right_head, left_head, keep, type_vars, %{}) do
-          {:match, _, _} = match -> match
+          {:match, _} = match -> match
           _ -> nil
         end
       end)
 
-    with {:match, _, new_vars} <- match,
+    with {:match, new_vars} <- match,
          type_vars = Map.merge(type_vars, new_vars),
          acc_vars = Map.merge(acc_vars, new_vars, fn _, v1, v2 -> Union.union(v1, v2) end),
          right_body = bind_matching(right_body, right_inferred, type_vars),
+         # TODO: Consider how subsets matter here.
          {:match, _, new_vars} <-
            unify(left_body, right_body, keep, type_vars, %{}) do
       unify_fn(left_heads, left_body, clauses, right_inferred, keep, vars,
@@ -258,33 +304,43 @@ defmodule Types.Checker do
   end
 
   defp unify_paired(lefties, righties, keep, vars, acc_vars) do
-    unify_paired(lefties, righties, keep, vars, acc_vars, [])
+    unify_paired(lefties, righties, keep, vars, acc_vars, :match)
   end
-  defp unify_paired([left | lefties], [right | righties], keep, vars, acc_vars, matched) do
+
+  defp unify_paired([left | lefties], [right | righties], keep, vars, acc_vars, kind) do
     case unify_each(left, right, keep, vars, acc_vars) do
       {:match, new_vars} ->
         vars = Map.merge(vars, new_vars)
         acc_vars = Map.merge(acc_vars, new_vars)
-        unify_paired(lefties, righties, keep, vars, acc_vars, [right | matched])
+        unify_paired(lefties, righties, keep, vars, acc_vars, kind)
+      {:subset, new_vars} ->
+        vars = Map.merge(vars, new_vars)
+        acc_vars = Map.merge(acc_vars, new_vars)
+        unify_paired(lefties, righties, keep, vars, acc_vars, :subset)
       :disjoint ->
         :disjoint
     end
   end
-  defp unify_paired([], [], _keep, _vars, acc_vars, matched) do
-    {:match, :lists.reverse(matched), acc_vars}
+  defp unify_paired([], [], _keep, _vars, acc_vars, kind) do
+    {kind, acc_vars}
   end
 
   # TODO: Review or remove me
-  def unify_args([left | lefties], [right | righties], keep, vars, acc_vars) do
+  def unify_args(lefties, righties, keep, vars, acc_vars) do
+    unify_args(lefties, righties, keep, vars, acc_vars, :match)
+  end
+  def unify_args([left | lefties], [right | righties], keep, vars, acc_vars, kind) do
     case unify(left, right, keep, vars, acc_vars) do
       {:match, _, acc_vars} ->
-        unify_args(lefties, righties, keep, vars, acc_vars)
+        unify_args(lefties, righties, keep, vars, acc_vars, kind)
+      {:subset, _, acc_vars} ->
+        unify_args(lefties, righties, keep, vars, acc_vars, :subset)
       {:disjoint, _, _} ->
         :disjoint
     end
   end
-  def unify_args([], [], _keep, _vars, acc_vars) do
-    {:match, acc_vars}
+  def unify_args([], [], _keep, _vars, acc_vars, kind) do
+    {kind, acc_vars}
   end
 
   @doc """
@@ -628,6 +684,7 @@ defmodule Types.Checker do
   defp of_var_apply_unify_recur([{head, [{:var, _, var_recur}] = body} | clauses],
                                 funs, args, recur, inferred, sum, acc_inferred) do
     # TODO: What if a variable is set to an empty list in acc_inferred?
+    # TODO: Consider how subsets matter here.
     with true <- var_recur in recur,
          {:match, acc_inferred} <- unify_args(args, head, %{}, inferred, acc_inferred) do
       of_var_apply_unify_recur(clauses, funs, args, recur, inferred, Union.union(body, sum), acc_inferred)
@@ -670,6 +727,7 @@ defmodule Types.Checker do
   # results of all subsets or not support overlapping clauses.
   defp of_var_apply_clauses(clauses, args, return, inferred) do
     # TODO: Review this altogether.
+    # TODO: Consider how subsets matter here.
     {pre, pos} =
       Enum.split_while(clauses, fn {head, _} ->
         unify_args(args, head, %{}, inferred, %{}) != :disjoint
@@ -730,13 +788,14 @@ defmodule Types.Checker do
 
     {match?, acc_inferred, state, return} =
       Enum.reduce_while(clauses, {false, acc_inferred, state, return},
-        fn {head, body}, {_, acc_inferred, state, return} = acc ->
+        fn {head, body}, {matched?, acc_inferred, state, return} = acc ->
+          # TODO: Consider how subsets matter here.
           case unify_paired(head, arg, fn_inferred, inferred, %{}) do
-            {:match, _, new_inferred} ->
+            {kind, new_inferred} ->
               {acc_inferred, state} = of_fn_apply_keep(new_inferred, acc_inferred, state)
               return = Union.union(return, body)
               next = if only_non_supertypes?, do: :halt, else: :cont
-              {next, {true, acc_inferred, state, return}}
+              {next, {matched? or kind == :match, acc_inferred, state, return}}
             _ ->
               {:cont, acc}
           end
@@ -830,6 +889,7 @@ defmodule Types.Checker do
           # in case a variable on the right is compared to a variable
           # on the left. However, since there are no variables on ::,
           # we cannot have variables on the left, so this is not a concern.
+          # TODO: Consider how subsets matter here.
           case unify_each(left, right, %{}, inferred, acc_inferred) do
             {:match, acc_inferred} ->
               {:halt, {true, acc_inferred}}
@@ -884,8 +944,7 @@ defmodule Types.Checker do
     end
   end
   defp of_fn([], _state, acc_clauses, acc_inferred, acc_state) do
-    # acc_clauses is in reverse order, which is expected by of_fn_supertype.
-    of_fn_supertype(acc_clauses, acc_inferred, acc_state)
+    {:ok, :lists.reverse(acc_clauses), acc_inferred, acc_state}
   end
 
   defp of_fn_clause({:->, meta, [args, body]}, state) do
@@ -979,32 +1038,6 @@ defmodule Types.Checker do
     acc
   end
 
-  # The goal of this function is to generate relevant supertype
-  # hidden clauses. For example, the function below:
-  #
-  #     (false -> :falsy; nil -> :falsy; _ -> :truthy)
-  #
-  # when given a type `atom()` needs to return `:falsy | :truthy`.
-  # Instead of handling subtypes at unification time (which is)
-  # already complex enough as is, we generate supertype clauses.
-  # So the function above has an actual type of:
-  #
-  #     (false -> :falsy; nil -> :falsy; atom() -> :falsy | :truthy; _ -> :truthy)
-  #
-  # The process of generating supertype clauses is the following:
-  #
-  # We start with the last clause and see if any of the previous
-  # clauses match. If they do and a free variable gets assigned
-  # atom value-types (such as false, nil, etc), those values are
-  # converted to the `atom()` type, the return bodies are merged
-  # and a new clause is added before the current clause.
-  #
-  # If a previous clause matches but there are no free variables,
-  # we only need to merge the return types.
-  defp  of_fn_supertype(acc_clauses, acc_inferred, acc_state) do
-    {:ok, :lists.reverse(acc_clauses), acc_inferred, acc_state}
-  end
-
   ## Recursive definitions
 
   defp of_def(clauses, state) do
@@ -1020,8 +1053,7 @@ defmodule Types.Checker do
     end
   end
   defp of_def([], acc_clauses, acc_inferred, acc_state) do
-    # acc_clauses is in reverse order, which is expected by of_fn_supertype.
-    of_fn_supertype(acc_clauses, acc_inferred, acc_state)
+    {:ok, :lists.reverse(acc_clauses), acc_inferred, acc_state}
   end
 
   # This function receives all clauses and their state as well as
@@ -1094,6 +1126,7 @@ defmodule Types.Checker do
       keys = of_recur_keys(counter, acc_counter, keys)
 
       right_return = bind_if(right_return, & &1 in free, inferred)
+      # TODO: Consider how subsets matter here.
       case unify(left_return, right_return, clause_inferred, inferred, inferred) do
         {:match, _, inferred} ->
           clause_inferred = Map.take(inferred, keys)

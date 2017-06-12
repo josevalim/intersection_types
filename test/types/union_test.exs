@@ -30,6 +30,18 @@ defmodule Types.UnionTest do
       assert quoted_union(atom(), :foo) ==
              [:atom]
 
+      assert quoted_union(atom(), boolean()) ==
+             [:atom]
+
+      assert quoted_union(boolean(), atom()) ==
+             [:atom]
+
+      assert quoted_union(atom() | integer(), boolean()) ==
+             [:atom, :integer]
+
+      assert quoted_union(boolean(), atom() | integer()) ==
+             [:atom, :integer]
+
       assert quoted_union(integer(), :foo) ==
              [:integer, {:atom, :foo}]
     end
