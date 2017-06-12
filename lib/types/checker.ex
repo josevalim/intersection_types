@@ -632,7 +632,7 @@ defmodule Types.Checker do
   end
 
   defp of_var_apply_recur(types, var_counter, var_applies, var_level, levels) do
-    Union.vars_args(types, {[], []}, fn
+    Union.reduce_args(types, {[], []}, fn
       {:var, _, ^var_counter}, {_, acc_levels} ->
         {:self, acc_levels}
       {:var, _, counter}, {acc_applies, acc_levels} when is_list(acc_applies) ->
@@ -718,7 +718,7 @@ defmodule Types.Checker do
 
   # If we have a function with type:
   #
-  #    (:foo -> :bar; atom -> binary())(atom())
+  #    (true -> a; boolean() -> b; atom() -> c)(atom())
   #
   # When passing an atom to it, which we don't know the value
   # at compile-time, so may inflect that the response is binary()
@@ -811,9 +811,7 @@ defmodule Types.Checker do
   end
 
   defp of_fn_apply_only_non_supertypes?(arg, inferred) do
-    Union.vars(arg, true, fn {_, _, counter}, acc ->
-      acc and not Union.supertype?(Map.get(inferred, counter, []))
-    end)
+    not Enum.any?(arg, &Union.supertype?([&1], inferred))
   end
 
   # If the variable has an empty union type, it means it
@@ -1025,7 +1023,7 @@ defmodule Types.Checker do
     case Map.fetch!(levels, key) do
       {^level, _applies, deps} ->
         value = Map.get(inferred, key, [])
-        acc = if Union.supertype?(value), do: [key | acc], else: acc
+        acc = if Union.supertype?(value, false), do: [key | acc], else: acc
         acc = of_fn_match(deps, inferred, level, levels, acc)
         of_fn_match(keys, inferred, level, levels, acc)
       {_, _, _} ->

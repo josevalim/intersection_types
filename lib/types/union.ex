@@ -19,10 +19,9 @@ defmodule Types.Union do
   # functions on this module:
   #
   #   traverse
-  #   vars
+  #   reduce
   #   qualify
   #   to_algebra
-  #   supertype?
   #   ast_to_types
   #
 
@@ -281,41 +280,38 @@ defmodule Types.Union do
   end
 
   @doc """
-  Reduces over the types and invokes fun on every var node.
+  Reduces over leaf types.
   """
-  def vars(types, state, fun) do
-    Enum.reduce(types, state, &vars_each(&1, &2, fun))
+  def reduce(types, state, fun) do
+    Enum.reduce(types, state, &reduce_each(&1, &2, fun))
   end
 
-  defp vars_each({:fn, clauses, _inferred, _arity}, acc, fun) do
+  defp reduce_each({:fn, clauses, _inferred, _arity}, acc, fun) do
     Enum.reduce(clauses, acc, fn {head, body}, acc ->
-      acc = vars_args(head, acc, fun)
-      acc = vars(body, acc, fun)
+      acc = reduce_args(head, acc, fun)
+      acc = reduce(body, acc, fun)
       acc
     end)
   end
-  defp vars_each({:cons, left, right}, acc, fun) do
-    acc = vars_each(left, acc, fun)
-    acc = vars_each(right, acc, fun)
+  defp reduce_each({:cons, left, right}, acc, fun) do
+    acc = reduce_each(left, acc, fun)
+    acc = reduce_each(right, acc, fun)
     acc
   end
-  defp vars_each({:tuple, args, _arity}, acc, fun) do
-    vars(args, acc, fun)
+  defp reduce_each({:tuple, args, _arity}, acc, fun) do
+    reduce(args, acc, fun)
   end
-  defp vars_each({:var, _, _} = var, acc, fun) do
-    fun.(var, acc)
-  end
-  defp vars_each(_, acc, _fun) do
-    acc
+  defp reduce_each(type, acc, fun) do
+    fun.(type, acc)
   end
 
   @doc """
-  Reducers over the given arguments looking for vars.
+  Reducers over all leaf types.
 
-  Same as `vars/3` but goes through the list of arguments.
+  Same as `reduce/3` but goes through the list of arguments.
   """
-  def vars_args(args, acc, fun) do
-    Enum.reduce(args, acc, &vars(&1, &2, fun))
+  def reduce_args(args, acc, fun) do
+    Enum.reduce(args, acc, &reduce(&1, &2, fun))
   end
 
   @doc """
@@ -499,45 +495,31 @@ defmodule Types.Union do
   a supertype if the element is a supertype. For example, `atom()`
   is a supertype of the values `:foo`, `:bar`, etc.
 
-  In other words, for unions with one element, this function checks
-  if there is some type in which `qualify(element, some_type)`
-  returns true.
+  If inferred is given, variables are expanded and are marked as
+  supertype based on its expansion. Without inferred, variables are
+  not considered supertypes.
   """
-  def supertype?([type]), do: each_supertype?(type)
-  def supertype?(types) when is_list(types), do: true
-
-  defp each_supertype?({:cons, left, right}) do
-    each_supertype?(left) or each_supertype?(right)
-  end
-  defp each_supertype?({:tuple, args, _}) do
-    Enum.any?(args, &each_supertype?/1)
-  end
-  defp each_supertype?({:fn, clauses, _, _}) do
-    Enum.any?(clauses, fn {head, body} ->
-      Enum.any?(head, &supertype?/1) or supertype?(body)
+  def supertype?([type], inferred) do
+    reduce([type], false, fn
+      {:var, _, counter}, acc when is_map(inferred) ->
+        acc or supertype?(Map.get(inferred, counter, []), inferred)
+      :atom, _acc ->
+        true
+      _, acc ->
+        acc
     end)
   end
-
-  defp each_supertype?(:atom), do: true
-  defp each_supertype?(_), do: false
+  def supertype?(types, _inferred) when is_list(types) do
+    true
+  end
 
   @doc """
   Returns true if the given type is recursive.
   """
-  def recursive?(types, key), do: Enum.any?(types, &each_recursive?(&1, key))
-
-  defp each_recursive?({:cons, left, right}, key) do
-    each_recursive?(left, key) or each_recursive?(right, key)
-  end
-  defp each_recursive?({:tuple, args, _}, key) do
-    Enum.any?(args, &each_recursive?(&1, key))
-  end
-  defp each_recursive?({:fn, clauses, _, _}, key) do
-    Enum.any?(clauses, fn {head, body} ->
-      Enum.any?(head, &recursive?(&1, key)) or recursive?(body, key)
+  def recursive?(types, key) do
+    reduce(types, false, fn
+      {:var, _, counter}, _ when counter == key -> true
+      _, acc -> acc
     end)
   end
-
-  defp each_recursive?({:var, _, key}, key), do: true
-  defp each_recursive?(_, _key), do: false
 end

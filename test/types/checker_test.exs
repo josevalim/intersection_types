@@ -304,6 +304,22 @@ defmodule Types.CheckerTest do
       end) |> format() == "(atom() -> :bar | :baz)"
 
       assert quoted_of(fn x ->
+        (fn :foo -> :bar; y -> y end).(x)
+      end) |> format() == "(:foo | a -> :bar | a)"
+
+      assert quoted_of((fn x ->
+        (fn :foo -> :bar; y -> y end).(x)
+      end).(:baz)) |> format() == ":bar | :baz"
+
+      assert quoted_of(fn x :: atom() ->
+        (fn :foo -> :bar; y -> y end).(x)
+      end) |> format() == "(a -> :bar | a) when a: atom()"
+
+      assert quoted_of((fn x :: atom() ->
+        (fn :foo -> :bar; y -> y end).(x)
+      end).(:baz)) |> format() == ":bar | :baz"
+
+      assert quoted_of(fn x ->
         fn y :: boolean() ->
           (fn {z, true} -> z; {:foo, false} -> false end).({x, y})
         end
@@ -425,7 +441,7 @@ defmodule Types.CheckerTest do
              "{((:bar | :foo -> :bar | :foo) -> {:foo, :bar}), {:foo, :bar}}"
     end
 
-    test "with function argument and recursive" do
+    test "with function argument and type-recursive" do
       # # Generalization
       assert quoted_of((
         y = (fn x -> fn y -> x.(x.(y)) end end).(fn z -> z end)
