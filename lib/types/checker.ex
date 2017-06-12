@@ -789,7 +789,6 @@ defmodule Types.Checker do
     {match?, acc_inferred, state, return} =
       Enum.reduce_while(clauses, {false, acc_inferred, state, return},
         fn {head, body}, {matched?, acc_inferred, state, return} = acc ->
-          # TODO: Consider how subsets matter here.
           case unify_paired(head, arg, fn_inferred, inferred, %{}) do
             {kind, new_inferred} ->
               {acc_inferred, state} = of_fn_apply_keep(new_inferred, acc_inferred, state)
@@ -889,8 +888,7 @@ defmodule Types.Checker do
           # in case a variable on the right is compared to a variable
           # on the left. However, since there are no variables on ::,
           # we cannot have variables on the left, so this is not a concern.
-          # TODO: Consider how subsets matter here.
-          case unify_each(left, right, %{}, inferred, acc_inferred) do
+          case unify_paired([left], [right], %{}, inferred, acc_inferred) do
             {:match, acc_inferred} ->
               {:halt, {true, acc_inferred}}
             _ ->
@@ -1126,7 +1124,6 @@ defmodule Types.Checker do
       keys = of_recur_keys(counter, acc_counter, keys)
 
       right_return = bind_if(right_return, & &1 in free, inferred)
-      # TODO: Consider how subsets matter here.
       case unify(left_return, right_return, clause_inferred, inferred, inferred) do
         {:match, _, inferred} ->
           clause_inferred = Map.take(inferred, keys)

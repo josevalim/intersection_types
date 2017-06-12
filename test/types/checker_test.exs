@@ -138,6 +138,9 @@ defmodule Types.CheckerTest do
     test "match" do
       assert {:error, _, {:disjoint_match, _, _}} =
                quoted_of({:ok, a :: atom()} = {:ok, 0})
+
+      assert {:error, _, {:disjoint_match, _, _}} =
+               quoted_of(fn a :: atom() -> :ok = a end)
     end
 
     test "generalization" do
@@ -977,6 +980,15 @@ defmodule Types.CheckerTest do
                {:+, num} ->
                  (fn x :: atom() -> x end).(recur(num))
                num :: integer() ->
+                 num
+             end)
+
+      # Superset output
+      assert {:error, _, {:recur_return, _, _}} =
+             quoted_of(recur = fn
+               {:+, num} ->
+                 (fn true -> true end).(recur(num))
+               num :: atom() ->
                  num
              end)
     end
