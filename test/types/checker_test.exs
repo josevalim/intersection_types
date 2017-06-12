@@ -5,7 +5,7 @@ defmodule Types.CheckerTest do
 
   defp format({:ok, types, %{inferred: inferred}}) do
     types
-    |> Checker.bind(inferred, inferred)
+    |> Checker.bind_matching(inferred, inferred)
     |> Union.to_iodata()
     |> IO.iodata_to_binary()
   end

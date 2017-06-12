@@ -238,7 +238,7 @@ defmodule Types.Checker do
     with {:match, _, new_vars} <- match,
          type_vars = Map.merge(type_vars, new_vars),
          acc_vars = Map.merge(acc_vars, new_vars, fn _, v1, v2 -> Union.union(v1, v2) end),
-         right_body = bind(right_body, right_inferred, type_vars),
+         right_body = bind_matching(right_body, right_inferred, type_vars),
          {:match, _, new_vars} <-
            unify(left_body, right_body, keep, type_vars, %{}) do
       unify_fn(left_heads, left_body, clauses, right_inferred, keep, vars,
@@ -288,23 +288,25 @@ defmodule Types.Checker do
   end
 
   @doc """
-  Binds the variables to their types.
+  Traverses types binding the variables in only with their types in vars.
   """
-  def bind(types, only, _vars) when only == %{} do
+  def bind_matching(types, only, _vars) when only == %{} do
     types
   end
-  def bind(types, only, vars) do
+  def bind_matching(types, only, vars) do
+    bind_if(types, &Map.has_key?(only, &1), vars)
+  end
+
+  defp bind_if(types, condition, vars) do
     Union.traverse(types, :ok, fn
       {:var, _, counter}, acc ->
-        case only do
-          %{^counter => _} ->
+        case condition.(counter) do
+          true ->
             case Map.get(vars, counter, []) do
-              [_ | _] = existing ->
-                {:replace, bind(existing, only, vars), acc}
-              _ ->
-                {:ok, acc}
+              [_ | _] = existing -> {:replace, bind_if(existing, condition, vars), acc}
+              _ -> {:ok, acc}
             end
-          %{} ->
+          false ->
             {:ok, acc}
         end
       _, acc ->
@@ -372,7 +374,7 @@ defmodule Types.Checker do
   end
 
   defp of({:fn, _, clauses}, %{level: level} = state) do
-    with {:ok, clauses, inferred, state} <- of_fn_clauses(clauses, %{state | level: level + 1}) do
+    with {:ok, clauses, inferred, state} <- of_fn(clauses, %{state | level: level + 1}) do
       [{head, _} | _] = clauses
       ok([{:fn, clauses, inferred, length(head)}], %{state | level: level})
     end
@@ -791,7 +793,7 @@ defmodule Types.Checker do
     acc_inferred =
       Enum.reduce(new_inferred, acc_inferred, fn
         {key, [_ | _] = value}, acc_inferred ->
-          value = bind(value, rebind, rebind)
+          value = bind_matching(value, rebind, rebind)
           Map.update(acc_inferred, key, value, &Union.union(&1, value))
         {key, []}, acc_inferred ->
           value = Map.fetch!(rebind, key)
@@ -869,20 +871,21 @@ defmodule Types.Checker do
   ## Clauses
 
   # TODO: Check if clauses have overlapping types
-  defp of_fn_clauses(clauses, state) do
-    of_fn_clauses(clauses, state, [], %{}, state)
+  defp of_fn(clauses, state) do
+    of_fn(clauses, state, [], %{}, state)
   end
 
-  defp of_fn_clauses([clause | clauses], state, acc_clauses, acc_inferred, acc_state) do
+  defp of_fn([clause | clauses], state, acc_clauses, acc_inferred, acc_state) do
     with {:ok, head, body, clause_state} <- of_fn_clause(clause, acc_state) do
       {clause, clause_inferred, state_inferred} = of_fn_expand(head, body, clause_state)
       acc_inferred = Map.merge(acc_inferred, clause_inferred)
       acc_state = %{replace_vars(clause_state, state) | inferred: state_inferred}
-      of_fn_clauses(clauses, state, [clause | acc_clauses], acc_inferred, acc_state)
+      of_fn(clauses, state, [clause | acc_clauses], acc_inferred, acc_state)
     end
   end
-  defp of_fn_clauses([], _state, acc_clauses, acc_inferred, acc_state) do
-    {:ok, :lists.reverse(acc_clauses), acc_inferred, acc_state}
+  defp of_fn([], _state, acc_clauses, acc_inferred, acc_state) do
+    # acc_clauses is in reverse order, which is expected by of_fn_supertype.
+    of_fn_supertype(acc_clauses, acc_inferred, acc_state)
   end
 
   defp of_fn_clause({:->, meta, [args, body]}, state) do
@@ -976,6 +979,32 @@ defmodule Types.Checker do
     acc
   end
 
+  # The goal of this function is to generate relevant supertype
+  # hidden clauses. For example, the function below:
+  #
+  #     (false -> :falsy; nil -> :falsy; _ -> :truthy)
+  #
+  # when given a type `atom()` needs to return `:falsy | :truthy`.
+  # Instead of handling subtypes at unification time (which is)
+  # already complex enough as is, we generate supertype clauses.
+  # So the function above has an actual type of:
+  #
+  #     (false -> :falsy; nil -> :falsy; atom() -> :falsy | :truthy; _ -> :truthy)
+  #
+  # The process of generating supertype clauses is the following:
+  #
+  # We start with the last clause and see if any of the previous
+  # clauses match. If they do and a free variable gets assigned
+  # atom value-types (such as false, nil, etc), those values are
+  # converted to the `atom()` type, the return bodies are merged
+  # and a new clause is added before the current clause.
+  #
+  # If a previous clause matches but there are no free variables,
+  # we only need to merge the return types.
+  defp  of_fn_supertype(acc_clauses, acc_inferred, acc_state) do
+    {:ok, :lists.reverse(acc_clauses), acc_inferred, acc_state}
+  end
+
   ## Recursive definitions
 
   defp of_def(clauses, state) do
@@ -991,7 +1020,8 @@ defmodule Types.Checker do
     end
   end
   defp of_def([], acc_clauses, acc_inferred, acc_state) do
-    {:ok, :lists.reverse(acc_clauses), acc_inferred, acc_state}
+    # acc_clauses is in reverse order, which is expected by of_fn_supertype.
+    of_fn_supertype(acc_clauses, acc_inferred, acc_state)
   end
 
   # This function receives all clauses and their state as well as
@@ -1063,7 +1093,7 @@ defmodule Types.Checker do
       %{inferred: inferred, counter: acc_counter} = state
       keys = of_recur_keys(counter, acc_counter, keys)
 
-      {right_return, state} = of_recur_bind_inferred_free_vars(right_return, free, inferred, state)
+      right_return = bind_if(right_return, & &1 in free, inferred)
       case unify(left_return, right_return, clause_inferred, inferred, inferred) do
         {:match, _, inferred} ->
           clause_inferred = Map.take(inferred, keys)
@@ -1083,28 +1113,6 @@ defmodule Types.Checker do
   end
   defp of_recur_keys(pre_counter, counter, keys) do
     Enum.to_list(pre_counter+1..counter) ++ keys
-  end
-
-  defp of_recur_bind_inferred_free_vars(types, [], _vars, state) do
-    {types, state}
-  end
-  defp of_recur_bind_inferred_free_vars(types, free, vars, state) do
-    Union.traverse(types, state, fn
-      {:var, _, counter}, state ->
-        if counter in free do
-          case Map.get(vars, counter, []) do
-            [] ->
-              {:ok, state}
-            other ->
-              {other, state} = of_recur_bind_inferred_free_vars(other, free, vars, state)
-              {:replace, other, state}
-          end
-        else
-          {:ok, state}
-        end
-      _, state ->
-        {:ok, state}
-    end)
   end
 
   ## Blocks
