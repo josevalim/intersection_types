@@ -192,12 +192,7 @@ defmodule Types.Checker do
         {permuted, body}
       end
 
-    keep =
-      vars
-      |> Map.take(Map.keys(keep))
-      |> Map.merge(left_inferred)
-      |> Map.merge(right_inferred)
-
+    keep = Map.merge(keep, left_inferred)
     unify_fn(lefties, righties, right_inferred, keep, vars, vars, acc_vars)
   end
 
@@ -218,33 +213,56 @@ defmodule Types.Checker do
     end
   end
 
-  # Unifying functions is quite complex as it requires tracking
-  # different kinds of variables and renewing them at different
-  # stages.
+  # Unifying functions is done by making sure that all clauses
+  # on the left side is satisfied by at least one clause on the
+  # right side.
   #
-  # We will explore those scenarios below.
+  # This is quite complex as it requires tracking different kinds
+  # of variables and renewing them at different stages. We will
+  # explore those scenarios below.
   #
   # ## Example 1
   #
-  #     ((a -> b) -> (a -> b)) <~> (:foo -> :bar; :bar -> :baz)
+  # The type:
+  #
+  #     ((a -> b) -> (a -> b))
+  #
+  # applied with:
+  #
+  #     (:foo -> :bar; :bar -> :baz)
   #
   # should unify to:
   #
   #     (:foo | :bar -> :bar | :baz)
   #
   # Note the left side is made of three functions, where the variables
-  # (a -> b) are defined in the outermost one. This means that, we
+  # a and b are defined in the outermost one. This means that, we
   # need to know which variables have been in the outermost function
-  # and properly pass them forward for "cleaning" the inferred variables.
+  # and properly pass them forward for "cleaning".
   #
-  # This is done by the keep argument. The keep argument contains:
+  # This is done by the keep argument. The keep argument keeps all
+  # variables from the left side, both outer and inner ones.
   #
-  #   1. The values of all vars before entering the function.
-  #   2. The values of all vars inferred from the left side.
-  #   3. The values of all vars inferred from the right side.
+  # ## Example 2
   #
+  # The type:
+  #
+  #     (({:bar, a} -> b; {:foo, a} -> c), a -> {c, b})
+  #
+  # applied with:
+  #
+  #     (:foo, :ok} -> :bar; {:bar, :error} -> :foo)
+  #
+  # should not unify. That's because we are attempting to assign the
+  # variable `a`, from different clauses, to two different values:
+  # :ok and :error.
+  #
+  # In order to do this, we need to make sure the `keep` variables
+  # from the previous section are refreshed every time we change the
+  # left clause being analyzed.
   defp unify_fn([{left_heads, left_body} | lefties], righties, right_inferred,
                 keep, vars, type_vars, acc_vars) do
+    keep = Map.take(type_vars, Map.keys(keep))
     case unify_fn(left_heads, left_body, righties, right_inferred,
                   keep, vars, type_vars, acc_vars, false) do
       {type_vars, acc_vars} ->
@@ -259,6 +277,7 @@ defmodule Types.Checker do
 
   defp unify_fn(left_heads, left_body, [{right_head, right_body} | clauses],
                 right_inferred, keep, vars, type_vars, acc_vars, matched?) do
+    keep = Map.merge(keep, right_inferred)
     vars = Map.merge(vars, keep)
     type_vars = Map.merge(type_vars, keep)
 
