@@ -3,58 +3,56 @@ defmodule Types.Checker do
 
   alias Types.Union
 
-  @doc """
-  Unifies the types on left and right.
+  ## Unification
 
-  All of the types on the right must match at least one type
-  on the left. Internally we keep track of the following variables:
+  # The next functions are responsible for unification.
+  # Unification is about unifying types on the left with
+  # types on the right according to some rules. The rules
+  # change according to the unification being performed.
+  #
+  # There are five unification functions:
+  #
+  #   * unify_args - for unifying arguments
+  #   * unify_vars - for unifying type variable unions
+  #   * unify_return - for unifying return type unions
+  #   * unify_paired - for unifying two lists of types
+  #     side by side (i.e. in pairs)
+  #   * unify_each - the low level function that unifies
+  #     a non-union type directly with another type
+  #
+  # All unification functions receive the following variables:
+  #
+  #   * keep - the variables that should be refreshed when
+  #     unifying functions with functions
+  #   * vars - the variables that have been inferred so far
+  #   * acc_vars - the variables that have been inferred
+  #     during unification
 
-    * vars - variables already inferred.
-    * type_vars - variables inferred for each type on the right. Starts as vars.
-    * acc_vars - variables inferred for from the caller loop.
-
-  Any variable found during unification must intersect with
-  whatever variable found on the proper `*vars`. For example,
-  if a variable is found on the right side, it must intersect
-  with any inferred value in `vars`.
-
-  Unification works by pinning each specific type on the `right`
-  and finding a `left` type that matches. If such type exists
-  and variables are involved, `type_*vars` will be properly
-  updated and be set as the main `*vars` once we move to the
-  next type.
-
-  `acc_vars` is only updated by this function, never read.
-  `acc_vars` keeps inference information across the caller
-  loop. For example, if we are unifying against multiple clauses,
-  `acc_vars` will keep unifying information for all clauses.
-  """
   # TODO: Include error reason every time unification fails.
 
-  # TODO: Rename this function to something decent.
+  ## UNIFY RETURN
 
-  # This function returns:
+  # This function is used when all types on the right must
+  # have a match on the left side. It is used to check for
+  # return types.
   #
-  #   * a :match tuple if all elements on the right side have
-  #     a match on the left side.
-  #   * :disjoint otherwise
-  #
-  def unify(lefties, [right | righties], keep, vars, acc_vars) do
-    unify(lefties, right, keep, vars, acc_vars, lefties, righties)
+  # Returns `{:match, vars}` if so, `:disjoint` otherwise.
+  defp unify_return(lefties, [right | righties], keep, vars, acc_vars) do
+    unify_return(lefties, right, keep, vars, acc_vars, lefties, righties)
   end
-  def unify(_lefties, [], _keep, _vars, acc_vars) do
+  defp unify_return(_lefties, [], _keep, _vars, acc_vars) do
     {:match, acc_vars}
   end
 
-  defp unify([type | types], right, keep, vars, acc_vars, lefties, righties) do
+  defp unify_return([type | types], right, keep, vars, acc_vars, lefties, righties) do
     case unify_each(type, right, keep, vars, acc_vars) do
       {:match, acc_vars} ->
-        unify(lefties, righties, keep, vars, acc_vars)
+        unify_return(lefties, righties, keep, vars, acc_vars)
       _ ->
-        unify(types, right, keep, vars, acc_vars, lefties, righties)
+        unify_return(types, right, keep, vars, acc_vars, lefties, righties)
     end
   end
-  defp unify([], _right, _keep, _vars, _acc_vars, _lefties, _righties) do
+  defp unify_return([], _right, _keep, _vars, _acc_vars, _lefties, _righties) do
     :disjoint
   end
 
@@ -202,6 +200,8 @@ defmodule Types.Checker do
     end
   end
 
+  ## UNIFY FN (helper for unifying functions on unify_each)
+
   # Unifying functions is done by making sure that all clauses
   # on the left side is satisfied by at least one clause on the
   # right side.
@@ -293,7 +293,7 @@ defmodule Types.Checker do
     with {kind, new_vars} when kind in [:match, :subset] <- match,
          {vars, acc_vars} = unify_fn_keep(new_vars, vars, acc_vars),
          right_body = bind_matching(right_body, keep, vars),
-         {:match, new_vars} <- unify(left_body, right_body, keep, vars, %{}) do
+         {:match, new_vars} <- unify_return(left_body, right_body, keep, vars, %{}) do
       {vars, acc_vars} = unify_fn_keep(new_vars, vars, acc_vars)
       unify_fn(left_heads, left_body, clauses, right_inferred, keep,
                vars, acc_vars, matched? or kind == :match)
@@ -337,6 +337,8 @@ defmodule Types.Checker do
     end)
   end
 
+  ## UNIFY PAIRED
+
   defp unify_paired(lefties, righties, keep, vars, acc_vars) do
     unify_paired(lefties, righties, keep, vars, acc_vars, :match)
   end
@@ -359,16 +361,18 @@ defmodule Types.Checker do
     {kind, acc_vars}
   end
 
+  ## UNIFY ARGS
+
   # TODO: Review or remove me
-  def unify_args([left | lefties], [right | righties], keep, vars, acc_vars) do
-    case unify(left, right, keep, vars, acc_vars) do
+  defp unify_args([left | lefties], [right | righties], keep, vars, acc_vars) do
+    case unify_return(left, right, keep, vars, acc_vars) do
       {:match, acc_vars} ->
         unify_args(lefties, righties, keep, vars, acc_vars)
       :disjoint ->
         :disjoint
     end
   end
-  def unify_args([], [], _keep, _vars, acc_vars) do
+  defp unify_args([], [], _keep, _vars, acc_vars) do
     {:match, acc_vars}
   end
 
@@ -1128,7 +1132,7 @@ defmodule Types.Checker do
       keys = of_recur_keys(counter, acc_counter, keys)
 
       right_return = bind_if(right_return, & &1 in free, inferred)
-      case unify(left_return, right_return, clause_inferred, inferred, inferred) do
+      case unify_return(left_return, right_return, clause_inferred, inferred, inferred) do
         {:match, inferred} ->
           clause_inferred = Map.take(inferred, keys)
           acc_inferred = Map.merge(acc_inferred, clause_inferred)
