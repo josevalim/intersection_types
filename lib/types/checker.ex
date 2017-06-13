@@ -455,11 +455,9 @@ defmodule Types.Checker do
       %{match: match, vars: vars, inferred: inferred} = state
 
       case of_match(left, right, inferred, %{}) do
-        {:ok, new_inferred} ->
-          case of_match_vars(Map.to_list(match), vars, inferred, new_inferred) do
-            {vars, new_inferred} -> ok(right, %{state | inferred: new_inferred, vars: vars})
-            :error -> error(meta, {:match_binding, left})
-          end
+        {:ok, acc_inferred} ->
+          {vars, acc_inferred} = of_match_vars(Map.to_list(match), vars, acc_inferred)
+          ok(right, %{state | inferred: acc_inferred, vars: vars})
         :error ->
           error(meta, {:disjoint_match, left, right})
       end
@@ -506,6 +504,7 @@ defmodule Types.Checker do
       of_apply(types, arity, meta, args, state, Union.union(acc, return))
     end
   end
+  # TODO: We need to act differently depending if var is a free variable or not.
   defp of_apply([{:var, var_ctx, var_counter} | types], arity, meta, args, state, acc) do
     with {:ok, return, state} <- of_var_apply(var_ctx, var_counter, meta, args, arity, state) do
       of_apply(types, arity, meta, args, state, Union.union(acc, return))
@@ -579,10 +578,6 @@ defmodule Types.Checker do
 
             # We have a new clause for each existing inferred function,
             # we need to find the proper placement for it.
-            #
-            # Note that, if the variable being applied to had a type
-            # defined by the user, we will extend the user types, which
-            # is fine since we check all `::` bindings later on.
             types =
               for {:fn, fn_clauses, fn_inferred, arity} <- types do
                 {:fn, of_var_apply_clauses(fn_clauses, [arg_types], return, inferred), fn_inferred, arity}
@@ -882,10 +877,6 @@ defmodule Types.Checker do
     {match?, acc_inferred} =
       Enum.reduce_while(lefties, {false, acc_inferred},
         fn left, {_, acc_inferred} = acc ->
-          # Notice that acc_inferred may have a variable set to empty
-          # in case a variable on the right is compared to a variable
-          # on the left. However, since there are no variables on ::,
-          # we cannot have variables on the left, so this is not a concern.
           case unify_paired([left], [right], %{}, inferred, acc_inferred) do
             {:match, acc_inferred} ->
               {:halt, {true, acc_inferred}}
@@ -908,26 +899,21 @@ defmodule Types.Checker do
   # associated type variable and assign the type directly to
   # its var name. This is necessary because generalization
   # works on the types returned by vars.
-  defp of_match_vars([{var_ctx, {level, match_vars}} | matches], vars, binding, inferred) do
-    of_match_vars(match_vars, var_ctx, level, matches, vars, binding, inferred)
+  defp of_match_vars([{var_ctx, {level, match_vars}} | matches], vars, inferred) do
+    of_match_vars(match_vars, var_ctx, level, matches, vars, inferred)
   end
-  defp of_match_vars([], vars, _binding, inferred) do
+  defp of_match_vars([], vars, inferred) do
     {vars, inferred}
   end
 
   defp of_match_vars([{_, _, counter} | match_vars], var_ctx,
-                     level, matches, vars, binding, inferred) do
-    case Map.fetch!(binding, counter) do
-      [] ->
-        of_match_vars(match_vars, var_ctx, level, matches,
-                      Map.put(vars, var_ctx, {level, Map.fetch!(inferred, counter)}),
-                      binding, Map.delete(inferred, counter))
-      _ ->
-        :error
-    end
+                     level, matches, vars, inferred) do
+    of_match_vars(match_vars, var_ctx, level, matches,
+                  Map.put(vars, var_ctx, {level, Map.fetch!(inferred, counter)}),
+                  Map.delete(inferred, counter))
   end
-  defp of_match_vars([], _var_ctx, _level, matches, vars, binding, inferred) do
-    of_match_vars(matches, vars, binding, inferred)
+  defp of_match_vars([], _var_ctx, _level, matches, vars, inferred) do
+    of_match_vars(matches, vars, inferred)
   end
 
   ## Clauses
@@ -1253,7 +1239,17 @@ defmodule Types.Checker do
     end
   end
 
-  defp of_pattern_bind_var(match, var_ctx, [_, _ | _] = types, state) do
+  defp of_pattern_bind_var(match, var_ctx, [], state) do
+    %{counter: counter, inferred: inferred, level: level, levels: levels} = state
+    inferred = Map.put(inferred, counter, [])
+    vars = [{:var, var_ctx, counter}]
+    match = Map.put(match, var_ctx, {level, vars})
+    levels = Map.put(levels, counter, {level, [], []})
+    state = %{state | match: match, counter: counter + 1, inferred: inferred, levels: levels}
+    ok(vars, state)
+  end
+
+  defp of_pattern_bind_var(match, var_ctx, types, state) do
     %{counter: counter, inferred: inferred, level: level, levels: levels} = state
 
     {vars, {counter, inferred, levels}} =
@@ -1265,16 +1261,6 @@ defmodule Types.Checker do
 
     match = Map.put(match, var_ctx, {level, vars})
     state = %{state | match: match, counter: counter, inferred: inferred, levels: levels}
-    ok(vars, state)
-  end
-
-  defp of_pattern_bind_var(match, var_ctx, types, state) do
-    %{counter: counter, inferred: inferred, level: level, levels: levels} = state
-    inferred = Map.put(inferred, counter, types)
-    vars = [{:var, var_ctx, counter}]
-    match = Map.put(match, var_ctx, {level, vars})
-    levels = Map.put(levels, counter, {level, [], []})
-    state = %{state | match: match, counter: counter + 1, inferred: inferred, levels: levels}
     ok(vars, state)
   end
 

@@ -686,8 +686,10 @@ defmodule Types.CheckerTest do
     end
 
     test "with binding" do
-      assert {:error, _, {:match_binding, _}} =
-             quoted_of((x :: boolean()) = true)
+      assert quoted_of((x :: boolean()) = true) |> format() == "true"
+      assert quoted_of(fn y -> x = y; x end) |> format() == "(a -> a)"
+      assert quoted_of(fn y :: atom() -> x = y; x end) |> format() == "(a -> a) when a: atom()"
+      assert quoted_of(fn y -> (x :: atom()) = y; x end) |> format() == "(a -> a) when a: atom()"
     end
   end
 
