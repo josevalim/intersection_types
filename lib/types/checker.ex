@@ -31,42 +31,31 @@ defmodule Types.Checker do
   """
   # TODO: Include error reason every time unification fails.
 
+  # TODO: Rename this function to something decent.
+
   # This function returns:
   #
   #   * a :match tuple if all elements on the right side have
   #     a match on the left side.
-  #   * a :subset tuple if some elements on the right side have
-  #     matched.
-  #   * a :disjoint tuple if there are no matches
-  def unify(left, right, keep, vars, acc_vars) do
-    unify(left, right, keep, vars, acc_vars, [], true)
+  #   * :disjoint otherwise
+  #
+  def unify(lefties, [right | righties], keep, vars, acc_vars) do
+    unify(lefties, right, keep, vars, acc_vars, lefties, righties)
+  end
+  def unify(_lefties, [], _keep, _vars, acc_vars) do
+    {:match, acc_vars}
   end
 
-  defp unify(lefties, [right | righties], keep, vars, acc_vars, matched, matched?) do
-    unify(lefties, right, keep, vars, acc_vars, lefties, righties, matched, [], matched?)
-  end
-  defp unify(_lefties, [], _keep, _vars, acc_vars, matched, true) do
-    {:match, matched, acc_vars}
-  end
-  defp unify(_lefties, [], _keep, _vars, acc_vars, [], false) do
-    {:disjoint, [], acc_vars}
-  end
-  defp unify(_lefties, [], _keep, _vars, acc_vars, matched, false) do
-    {:subset, matched, acc_vars}
-  end
-
-  defp unify([type | types], right, keep, vars, acc_vars, lefties, righties, matched, subset, matched?) do
+  defp unify([type | types], right, keep, vars, acc_vars, lefties, righties) do
     case unify_each(type, right, keep, vars, acc_vars) do
       {:match, acc_vars} ->
-        unify(lefties, righties, keep, vars, acc_vars, [right | matched], matched?)
-      {:subset, acc_vars} ->
-        unify(types, right, keep, vars, acc_vars, lefties, righties, matched, [type | subset], matched?)
-      :disjoint ->
-        unify(types, right, keep, vars, acc_vars, lefties, righties, matched, subset, matched?)
+        unify(lefties, righties, keep, vars, acc_vars)
+      _ ->
+        unify(types, right, keep, vars, acc_vars, lefties, righties)
     end
   end
-  defp unify([], _right, keep, vars, acc_vars, lefties, righties, matched, subset, _matched?) do
-    unify(lefties, righties, keep, vars, acc_vars, subset ++ matched, false)
+  defp unify([], _right, _keep, _vars, _acc_vars, _lefties, _righties) do
+    :disjoint
   end
 
   ## UNIFY VARS
@@ -304,7 +293,7 @@ defmodule Types.Checker do
     with {kind, new_vars} when kind in [:match, :subset] <- match,
          {vars, acc_vars} = unify_fn_keep(new_vars, vars, acc_vars),
          right_body = bind_matching(right_body, keep, vars),
-         {:match, _, new_vars} <- unify(left_body, right_body, keep, vars, %{}) do
+         {:match, new_vars} <- unify(left_body, right_body, keep, vars, %{}) do
       {vars, acc_vars} = unify_fn_keep(new_vars, vars, acc_vars)
       unify_fn(left_heads, left_body, clauses, right_inferred, keep,
                vars, acc_vars, matched? or kind == :match)
@@ -371,21 +360,16 @@ defmodule Types.Checker do
   end
 
   # TODO: Review or remove me
-  def unify_args(lefties, righties, keep, vars, acc_vars) do
-    unify_args(lefties, righties, keep, vars, acc_vars, :match)
-  end
-  def unify_args([left | lefties], [right | righties], keep, vars, acc_vars, kind) do
+  def unify_args([left | lefties], [right | righties], keep, vars, acc_vars) do
     case unify(left, right, keep, vars, acc_vars) do
-      {:match, _, acc_vars} ->
-        unify_args(lefties, righties, keep, vars, acc_vars, kind)
-      {:subset, _, acc_vars} ->
-        unify_args(lefties, righties, keep, vars, acc_vars, :subset)
-      {:disjoint, _, _} ->
+      {:match, acc_vars} ->
+        unify_args(lefties, righties, keep, vars, acc_vars)
+      :disjoint ->
         :disjoint
     end
   end
-  def unify_args([], [], _keep, _vars, acc_vars, kind) do
-    {kind, acc_vars}
+  def unify_args([], [], _keep, _vars, acc_vars) do
+    {:match, acc_vars}
   end
 
   @doc """
@@ -1145,7 +1129,7 @@ defmodule Types.Checker do
 
       right_return = bind_if(right_return, & &1 in free, inferred)
       case unify(left_return, right_return, clause_inferred, inferred, inferred) do
-        {:match, _, inferred} ->
+        {:match, inferred} ->
           clause_inferred = Map.take(inferred, keys)
           acc_inferred = Map.merge(acc_inferred, clause_inferred)
           of_recur_rec(recs, state, clauses, free, keys, clause_inferred, acc_inferred)
