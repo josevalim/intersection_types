@@ -193,7 +193,7 @@ defmodule Types.Checker do
       end
 
     keep = Map.merge(keep, left_inferred)
-    unify_fn(lefties, righties, right_inferred, keep, vars, vars, acc_vars)
+    unify_fn(lefties, righties, right_inferred, keep, vars, acc_vars)
   end
 
   defp unify_each({:cons, left1, right1}, {:cons, left2, right2}, keep, vars, acc_vars) do
@@ -261,25 +261,27 @@ defmodule Types.Checker do
   # from the previous section are refreshed every time we change the
   # left clause being analyzed.
   defp unify_fn([{left_heads, left_body} | lefties], righties, right_inferred,
-                keep, vars, type_vars, acc_vars) do
-    keep = Map.take(type_vars, Map.keys(keep))
+                keep, vars, acc_vars) do
+    keep =
+      vars
+      |> Map.take(Map.keys(keep))
+      |> Map.merge(right_inferred)
+
     case unify_fn(left_heads, left_body, righties, right_inferred,
-                  keep, vars, type_vars, acc_vars, false) do
-      {type_vars, acc_vars} ->
-        unify_fn(lefties, righties, right_inferred, keep, vars, type_vars, acc_vars)
+                  keep, vars, acc_vars, false) do
+      {vars, acc_vars} ->
+        unify_fn(lefties, righties, right_inferred, keep, vars, acc_vars)
       :error ->
         :disjoint
     end
   end
-  defp unify_fn([], _righties, _right_inferred, _keep, _vars, _type_vars, acc_vars) do
+  defp unify_fn([], _righties, _right_inferred, _keep, _vars, acc_vars) do
     {:match, acc_vars}
   end
 
   defp unify_fn(left_heads, left_body, [{right_head, right_body} | clauses],
-                right_inferred, keep, vars, type_vars, acc_vars, matched?) do
-    keep = Map.merge(keep, right_inferred)
+                right_inferred, keep, vars, acc_vars, matched?) do
     vars = Map.merge(vars, keep)
-    type_vars = Map.merge(type_vars, keep)
 
     # Unifying functions require all types on the left to be
     # matched by the types on the right, so we swap them below.
@@ -291,35 +293,59 @@ defmodule Types.Checker do
     #      end).(fn y :: atom() -> y end))
     #
     match =
-      Enum.find_value(left_heads, fn left_head ->
-        # TODO: Consider how subsets matter here.
-        case unify_paired(right_head, left_head, keep, type_vars, %{}) do
-          {:match, _} = match -> match
-          _ -> nil
+      Enum.reduce_while(left_heads, {:disjoint, %{}}, fn left_head, {kind, new_vars} ->
+        case unify_paired(right_head, left_head, keep, vars, new_vars) do
+          {:match, new_vars} -> {:halt, {:match, new_vars}}
+          {:subset, new_vars} -> {:cont, {:subset, new_vars}}
+          _ -> {:cont, {kind, new_vars}}
         end
       end)
 
-    with {:match, new_vars} <- match,
-         type_vars = Map.merge(type_vars, new_vars),
-         acc_vars = Map.merge(acc_vars, new_vars, fn _, v1, v2 -> Union.union(v1, v2) end),
-         right_body = bind_matching(right_body, right_inferred, type_vars),
-         # TODO: Consider how subsets matter here.
-         {:match, _, new_vars} <-
-           unify(left_body, right_body, keep, type_vars, %{}) do
-      unify_fn(left_heads, left_body, clauses, right_inferred, keep, vars,
-               Map.merge(type_vars, new_vars),
-               Map.merge(acc_vars, new_vars, fn _, v1, v2 -> Union.union(v1, v2) end), true)
+    with {kind, new_vars} when kind in [:match, :subset] <- match,
+         {vars, acc_vars} = unify_fn_keep(new_vars, vars, acc_vars),
+         right_body = bind_matching(right_body, keep, vars),
+         {:match, _, new_vars} <- unify(left_body, right_body, keep, vars, %{}) do
+      {vars, acc_vars} = unify_fn_keep(new_vars, vars, acc_vars)
+      unify_fn(left_heads, left_body, clauses, right_inferred, keep,
+               vars, acc_vars, matched? or kind == :match)
     else
       _ ->
         unify_fn(left_heads, left_body, clauses, right_inferred,
-                 keep, vars, type_vars, acc_vars, matched?)
+                 keep, vars, acc_vars, matched?)
     end
   end
-  defp unify_fn(_, _, [], _right_inferred, _keep, _vars, type_vars, acc_vars, true) do
-    {type_vars, acc_vars}
+  defp unify_fn(_, _, [], _right_inferred, _keep, vars, acc_vars, true) do
+    {vars, acc_vars}
   end
-  defp unify_fn(_, _, [], _right_inferred, _keep, _vars, _type_vars, _acc_vars, false) do
+  defp unify_fn(_, _, [], _right_inferred, _keep, _vars, _acc_vars, false) do
     :error
+  end
+
+  # This is a variant of of_fn_apply_keep but it is simpler
+  # as we don't need to keep levels for variables generated
+  # from inside inner functions, therefore we can use unique
+  # integers to generate such variables.
+  defp unify_fn_keep(new_inferred, inferred, acc_inferred) do
+    rebind =
+      Enum.reduce(new_inferred, %{}, fn
+        {key, []}, rebind ->
+          counter = -System.unique_integer([:positive])
+          value = [{:var, {:unify_fn, __MODULE__}, counter}]
+          Map.put(rebind, key, value)
+        _, rebind ->
+          rebind
+      end)
+
+    Enum.reduce(new_inferred, {inferred, acc_inferred}, fn
+      {key, value}, {inferred, acc_inferred} ->
+        value =
+          case value do
+            [_ | _] -> bind_matching(value, rebind, rebind)
+            [] -> Map.fetch!(rebind, key)
+          end
+        {Map.put(inferred, key, value),
+         Map.update(acc_inferred, key, value, &Union.union(&1, value))}
+    end)
   end
 
   defp unify_paired(lefties, righties, keep, vars, acc_vars) do

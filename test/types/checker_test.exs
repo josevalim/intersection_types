@@ -497,6 +497,14 @@ defmodule Types.CheckerTest do
       ) |> format() == "{:baz, :bat}"
     end
 
+    test "on intersection types with subsets" do
+      assert quoted_of(fn z ->
+        (fn {x, y :: atom()} ->
+          x.(y)
+        end).({fn :foo -> :bar; w :: atom() -> :baz end, z})
+      end) |> format() == "(atom() -> :bar | :baz)"
+    end
+
     test "on intersection types with composite types" do
       assert quoted_of((fn x ->
           {x.({:ok, true}), x.({:error, false})}
