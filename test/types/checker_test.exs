@@ -212,7 +212,7 @@ defmodule Types.CheckerTest do
 
       assert quoted_of(fn x ->
         (fn y :: boolean() -> y end).(x)
-      end) |> format() == "(a -> a) when a: false | true"
+      end) |> format() == "(false | true -> false | true)"
 
       assert quoted_of(fn x ->
         (fn y :: boolean() -> y end).(x)
@@ -222,11 +222,11 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn x ->
         (fn y :: boolean() -> y end).(x)
         (fn y :: boolean() -> y end).(x)
-      end) |> format() == "(a -> a) when a: false | true"
+      end) |> format() == "(false | true -> false | true)"
 
       assert quoted_of(fn x :: boolean() ->
         (fn y -> y end).(x)
-      end) |> format() == "(a -> a) when a: false | true"
+      end) |> format() == "(false | true -> false | true)"
 
       assert quoted_of(fn x ->
         fn z ->
@@ -242,23 +242,6 @@ defmodule Types.CheckerTest do
           z
         end).(x)
       end) |> format() == "(true -> true)"
-
-      assert quoted_of(fn x ->
-        true = (fn y :: boolean() -> y end).(x)
-        (fn z ->
-          (fn true -> true end).(z)
-          z
-        end).(x)
-      end) |> format() == "(true -> true)"
-
-      assert {:error, _, {:disjoint_apply, _, _, _}} =
-        quoted_of(fn x ->
-          false = (fn y :: boolean() -> y end).(x)
-          (fn z ->
-            (fn true -> true end).(z)
-            z
-          end).(x)
-        end)
 
       assert quoted_of(fn x ->
           (fn {true, z} -> z end).({x, x})
@@ -686,10 +669,26 @@ defmodule Types.CheckerTest do
     end
 
     test "with binding" do
-      assert quoted_of((x :: boolean()) = true) |> format() == "true"
-      assert quoted_of(fn y -> x = y; x end) |> format() == "(a -> a)"
-      assert quoted_of(fn y :: atom() -> x = y; x end) |> format() == "(a -> a) when a: atom()"
-      assert quoted_of(fn y -> (x :: atom()) = y; x end) |> format() == "(a -> a) when a: atom()"
+      assert quoted_of((x :: boolean()) = true) |> format() ==
+             "true"
+
+      assert quoted_of(fn y -> x = y; x end) |> format() ==
+             "(a -> a)"
+
+      assert quoted_of(fn y :: atom() -> x = y; x end) |> format() ==
+             "(a -> a) when a: atom()"
+
+      assert quoted_of(fn y -> (x :: atom()) = y; x end) |> format() ==
+             "(a -> a) when a: atom()"
+
+      assert {:error, _, {:disjoint_match, _, _}} =
+             quoted_of(fn y -> (x :: atom()) = y; (x :: integer()) = y; y end)
+
+      assert {:error, _, {:disjoint_match, _, _}} =
+             quoted_of(fn y :: atom() -> (x :: boolean()) = y; y end)
+
+      assert {:error, _, {:disjoint_match, _, _}} =
+             quoted_of(fn x -> true = (fn y :: boolean() -> y end).(x) end)
     end
   end
 
@@ -709,8 +708,11 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn {x :: integer(), x :: integer()} -> x end) |> format() ==
              "({integer(), integer()} -> integer())"
 
+      assert quoted_of(fn x :: boolean() -> x end) |> format() ==
+             "(false | true -> false | true)"
+
       assert quoted_of(fn {:ok, x :: boolean()} -> x end) |> format() ==
-             "({:ok, a} -> a) when a: false | true"
+             "({:ok, false} | {:ok, true} -> false | true)"
 
       assert {:error, _, {:bound_var, _, _, _}} =
              quoted_of(fn {x, x :: boolean()} -> x end)
@@ -841,15 +843,6 @@ defmodule Types.CheckerTest do
                    [{[[{:var, {:y, nil}, 1}]],
                      [{:var, {:y, nil}, 1}]
                   }], %{1 => [:atom]}, 1}]
-                }], %{0 => []}, 1}]
-
-      assert quoted_of(fn x -> fn y :: boolean() -> y end end) |> elem(1) ==
-             [{:fn,
-               [{[[{:var, {:x, nil}, 0}]],
-                 [{:fn,
-                   [{[[{:var, {:y, nil}, 1}]],
-                     [{:var, {:y, nil}, 1}]
-                  }], %{1 => [atom: true, atom: false]}, 1}]
                 }], %{0 => []}, 1}]
 
       assert quoted_of(fn x -> fn y -> y end end) |> elem(1) ==
