@@ -404,52 +404,6 @@ defmodule Types.CheckerTest do
       end) |> format() == "(atom() -> :bar | :baz)"
     end
 
-    test "on intersection types with composite types" do
-      assert quoted_of((fn x ->
-          {x.({:ok, true}), x.({:error, false})}
-        end).(fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end)
-      ) |> format() == "{true, :error}"
-
-      assert {:error, _, {:disjoint_apply, _, _, _}} =
-             quoted_of((fn x ->
-               {x.({:ok, true}), x.({:error, false})}
-             end).(fn {:ok, b :: boolean()} -> b end))
-
-      # First element
-      assert quoted_of((fn {y, x} ->
-          {x.({:ok, y}), x.({:error, y})}
-        end).({true, fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end})
-      ) |> format() == "{true, :error}"
-
-      assert quoted_of(fn z ->
-        (fn {y, x} ->
-          {x.({:ok, y}), x.({:error, y})}
-        end).({z, fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end})
-      end) |> format() == "(a -> {a, :error}) when a: false | true"
-
-      assert {:error, _, {:disjoint_apply, _, _, _}} =
-             quoted_of((fn {y, x} ->
-                 {x.({:ok, y}), x.({:error, y})}
-               end).({:other, fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end}))
-
-      # Second element
-      assert quoted_of((fn {x, y} ->
-          {x.({:ok, y}), x.({:error, y})}
-        end).({fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end, true})
-      ) |> format() == "{true, :error}"
-
-      assert quoted_of(fn z ->
-        (fn {x, y} ->
-          {x.({:ok, y}), x.({:error, y})}
-        end).({fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end, z})
-      end) |> format() == "{true, :error}"
-
-      assert {:error, _, {:disjoint_apply, _, _, _}} =
-             quoted_of((fn {x, y} ->
-                 {x.({:ok, y}), x.({:error, y})}
-               end).({fn {:ok, b :: boolean()} -> b; {:error, _ :: boolean()} -> :error end, :error}))
-    end
-
     test "on intersection types with free variables" do
       assert quoted_of(fn z ->
           (fn x -> {x.({:ok, z}), x.({:error, z})} end).

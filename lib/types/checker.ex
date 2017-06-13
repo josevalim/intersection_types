@@ -256,8 +256,7 @@ defmodule Types.Checker do
       |> Map.take(Map.keys(keep))
       |> Map.merge(right_inferred)
 
-    case unify_fn(left_heads, left_body, righties, right_inferred,
-                  keep, vars, acc_vars, false) do
+    case unify_fn(left_heads, left_body, righties, right_inferred, keep, vars, acc_vars, false) do
       {vars, acc_vars} ->
         unify_fn(lefties, righties, right_inferred, keep, vars, acc_vars)
       :error ->
@@ -299,8 +298,7 @@ defmodule Types.Checker do
                vars, acc_vars, matched? or kind == :match)
     else
       _ ->
-        unify_fn(left_heads, left_body, clauses, right_inferred,
-                 keep, vars, acc_vars, matched?)
+        unify_fn(left_heads, left_body, clauses, right_inferred, keep, vars, acc_vars, matched?)
     end
   end
   defp unify_fn(_, _, [], _right_inferred, _keep, vars, acc_vars, true) do
