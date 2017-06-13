@@ -634,8 +634,14 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn x -> fn y -> {x.(:foo), x.(x.(y))} end end) |> format() ==
              "((:foo -> a; b -> b) -> (b -> {a, b}))"
 
+      assert quoted_of(fn x -> fn y -> {x.(y), x.(y)} end end) |> format() ==
+             "((a -> b) -> (a -> {b, b}))"
+
+      assert quoted_of(fn x -> fn y -> fn z -> {x.(y), x.(z)} end end end) |> format() ==
+             "((a -> b; c -> d) -> (a -> (c -> {b, d})))"
+
       assert quoted_of(fn x -> fn y -> {x.(x.(y)), x.(:foo)} end end) |> format() ==
-             "((a -> a; :foo -> b) -> (a -> {a, b}))"
+             "((:foo -> a; b -> b) -> (b -> {b, a}))"
 
       assert quoted_of(fn x -> fn y -> {x.(x.(y)), x.(x.(y))} end end) |> format() ==
              "((a -> a) -> (a -> {a, a}))"

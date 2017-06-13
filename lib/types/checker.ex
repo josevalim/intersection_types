@@ -756,9 +756,28 @@ defmodule Types.Checker do
     # TODO: Consider how subsets matter here.
     {pre, pos} =
       Enum.split_while(clauses, fn {head, _} ->
+        head = of_var_apply_replace_vars_by_bricks(head, inferred)
         unify_args(args, head, %{}, inferred, %{}) != :disjoint
       end)
     pre ++ [{args, return} | pos]
+  end
+
+  # We don't want the existing free variables in the head to match,
+  # so we replace them by "bricks", which are fake atoms with
+  # references that are never supposed to match.
+  defp of_var_apply_replace_vars_by_bricks(args, inferred) do
+    ref = make_ref()
+    for arg <- args do
+      Union.traverse(arg, :ok, fn
+        {:var, _, counter}, acc ->
+          case Map.get(inferred, counter, []) do
+            [] -> {:replace, [{:atom, [counter | ref]}], acc}
+            _ -> {:ok, acc}
+          end
+        _, acc ->
+          {:ok, acc}
+      end) |> elem(0)
+    end
   end
 
   ### Fn Apply
@@ -1123,9 +1142,10 @@ defmodule Types.Checker do
 
     with {:ok, right_return, state} <-
            of_fn_apply(clauses, clause_inferred, meta, args, %{state | inferred: acc_inferred}) do
-      # If we have defined new variables when applying (see of_fn_apply_keep),
-      # we need to update the current keys so we also keep those new keys in
-      # clause_inferred, otherwise their types is lost.
+      # If we have defined new variables when applying
+      # (see of_fn_apply_keep), we need to update the
+      # current `keys` by comparing the difference in
+      # the counter, otherwise their types are lost.
       %{inferred: inferred, counter: acc_counter} = state
       keys = of_recur_keys(counter, acc_counter, keys)
 
