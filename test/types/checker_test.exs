@@ -199,11 +199,8 @@ defmodule Types.CheckerTest do
       assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of(fn x :: atom() -> (fn :foo -> :foo end).(x) end)
 
-      assert {:error, _, {:restricted_head, _, _, _}} =
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
              quoted_of(fn x :: boolean() -> (fn true -> true end).(x) end)
-
-      assert {:error, _, {:restricted_head, _, _, _}} =
-             quoted_of(fn x :: boolean() -> true = x end)
     end
 
     test "with inference" do
@@ -318,6 +315,14 @@ defmodule Types.CheckerTest do
       assert quoted_of((fn x :: atom() ->
         (fn :foo -> :bar; y -> y end).(x)
       end).(:baz)) |> format() == ":bar | :baz"
+
+      assert quoted_of(fn x :: boolean() ->
+        (fn true -> :foo; y -> y end).(x)
+      end) |> format() == "(false | true -> false | :foo)"
+
+      assert quoted_of(fn x :: integer() | atom() ->
+        (fn y :: integer() -> :foo; z -> {:bar, z} end).(x)
+      end) |> format() == "(integer() | a -> :foo | {:bar, a}) when a: atom()"
 
       assert quoted_of(fn x ->
         fn y :: boolean() ->
@@ -626,7 +631,7 @@ defmodule Types.CheckerTest do
         x
       end) |> format() == "(true -> true)"
 
-      # Return types cannot be not lazy though
+      # Match types cannot be not lazy though
       assert quoted_of(fn x ->
         z = (fn true -> true; false -> false end).(x)
         (fn true -> true end).(x)
@@ -826,7 +831,7 @@ defmodule Types.CheckerTest do
              "(false -> false; nil -> nil; a -> true)"
     end
 
-    test "bindings" do
+    test "binding" do
       assert quoted_of(fn x -> fn y :: atom() -> y end end) |> elem(1) ==
              [{:fn,
                [{[[{:var, {:x, nil}, 0}]],
@@ -834,6 +839,15 @@ defmodule Types.CheckerTest do
                    [{[[{:var, {:y, nil}, 1}]],
                      [{:var, {:y, nil}, 1}]
                   }], %{1 => [:atom]}, 1}]
+                }], %{0 => []}, 1}]
+
+      assert quoted_of(fn x -> fn y :: boolean() -> y end end) |> elem(1) ==
+             [{:fn,
+               [{[[{:var, {:x, nil}, 0}]],
+                 [{:fn,
+                   [{[[{:var, {:y, nil}, 1}]],
+                     [{:var, {:y, nil}, 1}]
+                  }], %{1 => [atom: true, atom: false]}, 1}]
                 }], %{0 => []}, 1}]
 
       assert quoted_of(fn x -> fn y -> y end end) |> elem(1) ==

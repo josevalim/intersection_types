@@ -37,7 +37,7 @@ defmodule Types.Union do
   # share variables in the body, however this restriction is
   # broken with recursive functions. TODO: We need to carefully
   # consider how this impacts the code and if we are going to
-  # allow users to express those types. Maybe it shuold only
+  # allow users to express those types. Maybe it should only
   # be possible if the recursion is at the top level function.
   #
   # ## Function code parsing.
@@ -510,6 +510,22 @@ defmodule Types.Union do
     end)
   end
   def supertype?(types, _inferred) when is_list(types) do
+    true
+  end
+
+  def supertype_or_subtype?([type], inferred) do
+    reduce([type], false, fn
+      {:var, _, counter}, acc when is_map(inferred) ->
+        acc or supertype_or_subtype?(Map.get(inferred, counter, []), inferred)
+      :atom, _acc ->
+        true
+      {:atom, _}, _acc ->
+        true
+      _, acc ->
+        acc
+    end)
+  end
+  def supertype_or_subtype?(types, _inferred) when is_list(types) do
     true
   end
 
