@@ -664,6 +664,12 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn x -> fn y -> fn z -> {x.({:foo, x.(:foo)}), x.({y, x.(:bar)}), x.(z)} end end end) |> format() ==
              "((:bar -> a; {:foo, b} -> c; {d, a} -> e; :foo -> b; f -> g) -> (d -> (f -> {c, e, g})))"
 
+      assert quoted_of(fn x -> fn y -> {x.({:foo, x.(y)}), x.({y, x.(:bar)})} end end) |> format() ==
+              "(({{:foo, a}, b} -> c; :bar -> b; {:foo, a} -> a) -> ({:foo, a} -> {a, c}))"
+
+      assert quoted_of(fn x -> fn y -> {x.({y, x.(:bar)}), x.({:foo, x.(y)})} end end) |> format() ==
+              "(({{:foo, a}, b} -> c; :bar -> b; {:foo, a} -> a) -> ({:foo, a} -> {c, a}))"
+
       # With supertypes
       assert quoted_of(fn x ->
         z = (fn z :: atom() -> z end).(:bar)
