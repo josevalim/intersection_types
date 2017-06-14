@@ -752,12 +752,20 @@ defmodule Types.Checker do
   # We need to either consider those cases by also considering the
   # results of all subsets or not support overlapping clauses.
   defp of_var_apply_clauses(clauses, args, return, inferred) do
-    # TODO: Review this altogether.
-    # TODO: Consider how subsets matter here.
+    args = Union.permute_args(args, & &1)
+
     {pre, pos} =
       Enum.split_while(clauses, fn {head, _} ->
-        head = of_var_apply_replace_vars_by_bricks(head, inferred)
-        unify_args(args, head, %{}, inferred, %{}) != :disjoint
+        permuted =
+          head
+          |> of_var_apply_replace_vars_by_bricks(inferred)
+          |> Union.permute_args(& &1)
+
+        Enum.any?(permuted, fn head ->
+          Enum.any?(args, fn arg ->
+            match?({:match, _}, unify_paired(arg, head, %{}, inferred, %{}))
+          end)
+        end)
       end)
     pre ++ [{args, return} | pos]
   end
