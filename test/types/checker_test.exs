@@ -625,11 +625,14 @@ defmodule Types.CheckerTest do
       assert quoted_of(fn x -> {x.(x.(:foo)), x.(x.(:bar))} end) |> format() ==
              "((:bar -> :bar; :foo -> :foo) -> {:foo, :bar})"
 
-      assert quoted_of(fn x -> fn y -> {x.(y), x.(:foo)} end end) |> format() ==
-             "((:foo -> a; b -> c) -> (b -> {c, a}))"
+      assert quoted_of(fn x -> fn y -> {x.(y), x.(:foo), x.(:bar)} end end) |> format() ==
+             "((:bar -> a; :foo -> b; c -> d) -> (c -> {d, b, a}))"
 
-      assert quoted_of(fn x -> fn y -> {x.(:foo), x.(y)} end end) |> format() ==
-             "((:foo -> a; b -> c) -> (b -> {a, c}))"
+      assert quoted_of(fn x -> fn y -> {x.(:foo), x.(y), x.(:bar)} end end) |> format() ==
+             "((:bar -> a; :foo -> b; c -> d) -> (c -> {b, d, a}))"
+
+      assert quoted_of(fn x -> fn y -> {x.(:foo), x.(:bar), x.(y)} end end) |> format() ==
+             "((:bar -> a; :foo -> b; c -> d) -> (c -> {b, a, d}))"
 
       assert quoted_of(fn x -> fn y -> {x.(:foo), x.(x.(y))} end end) |> format() ==
              "((:foo -> a; b -> b) -> (b -> {a, b}))"
@@ -654,6 +657,12 @@ defmodule Types.CheckerTest do
 
       assert quoted_of(fn x -> {x.(:foo).(:baz), x.(:bar).(:bat)} end) |> format() ==
              "((:bar -> (:bat -> a); :foo -> (:baz -> b)) -> {b, a})"
+
+      assert quoted_of(fn x -> fn y -> fn z -> {x.(z), x.({:foo, x.(:foo)}), x.({y, x.(:bar)})} end end end) |> format() ==
+             "((:bar -> a; {:foo, b} -> c; {d, a} -> e; :foo -> b; f -> g) -> (d -> (f -> {g, c, e})))"
+
+      assert quoted_of(fn x -> fn y -> fn z -> {x.({:foo, x.(:foo)}), x.({y, x.(:bar)}), x.(z)} end end end) |> format() ==
+             "((:bar -> a; {:foo, b} -> c; {d, a} -> e; :foo -> b; f -> g) -> (d -> (f -> {c, e, g})))"
 
       # With supertypes
       assert quoted_of(fn x ->

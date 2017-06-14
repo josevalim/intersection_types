@@ -12,7 +12,6 @@ defmodule Types.Checker do
   #
   # There are five unification functions:
   #
-  #   * unify_args - for unifying arguments
   #   * unify_vars - for unifying type variable unions
   #   * unify_return - for unifying return type unions
   #   * unify_paired - for unifying two lists of types
@@ -361,19 +360,6 @@ defmodule Types.Checker do
 
   ## UNIFY ARGS
 
-  # TODO: Review or remove me
-  defp unify_args([left | lefties], [right | righties], keep, vars, acc_vars) do
-    case unify_return(left, right, keep, vars, acc_vars) do
-      {:match, acc_vars} ->
-        unify_args(lefties, righties, keep, vars, acc_vars)
-      :disjoint ->
-        :disjoint
-    end
-  end
-  defp unify_args([], [], _keep, _vars, acc_vars) do
-    {:match, acc_vars}
-  end
-
   @doc """
   Traverses types binding the variables in only with their types in vars.
   """
@@ -550,7 +536,7 @@ defmodule Types.Checker do
 
   ### Var apply
 
-  defp of_var_apply(var_ctx, var_counter, meta, [arg_types], arity, state) do
+  defp of_var_apply(var_ctx, var_counter, meta, args, arity, state) do
     %{inferred: inferred, counter: counter, levels: levels} = state
     {var_level, var_applies, var_deps} = Map.fetch!(levels, var_counter)
 
@@ -577,11 +563,11 @@ defmodule Types.Checker do
     #
     #   4. if there `var_recur` is empty, then we are on the simplest case
     #
-    case of_var_apply_recur([arg_types], var_counter, var_applies, var_level, levels) do
+    case of_var_apply_recur(args, var_counter, var_applies, var_level, levels) do
       {{:occurs, counter}, _move_up} ->
-        error(meta, {:occurs, [{:var, var_ctx, var_counter}], counter, arg_types, arity})
+        error(meta, {:occurs, [{:var, var_ctx, var_counter}], counter, args, arity})
       {:self, _move_up} ->
-        error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], arg_types, arity})
+        error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], args, arity})
       {var_recur, move_up} ->
         var_recur = Enum.uniq(var_recur)
 
@@ -594,16 +580,13 @@ defmodule Types.Checker do
         #      inferred it to not be a function or it has different arity
         #   4. Otherwise there is no match and we just need to add our new types
         #
-        case of_var_apply_unify(var_counter, [arg_types], arity, inferred, var_recur) do
+        case of_var_apply_unify(var_counter, args, arity, inferred, var_recur) do
           {{:match, return, inferred}, types} ->
             inferred = Map.put(inferred, var_counter, types)
             ok(return, %{state | inferred: inferred})
-          {:recursive, _} ->
-            # TODO: Add a test for this clause.
-            error(meta, {:disjoint_var_apply, [var_ctx, [arg_types]]})
           {:nomatch, []} ->
             # TODO: Add a test for this clause.
-            error(meta, {:disjoint_var_apply, [var_ctx, [arg_types]]})
+            error(meta, {:disjoint_var_apply, [var_ctx, args]})
           {:nomatch, types} ->
             return = [{:var, var_ctx, counter}]
 
@@ -611,7 +594,7 @@ defmodule Types.Checker do
             # we need to find the proper placement for it.
             types =
               for {:fn, fn_clauses, fn_inferred, arity} <- types do
-                {:fn, of_var_apply_clauses(fn_clauses, [arg_types], return, inferred), fn_inferred, arity}
+                {:fn, of_var_apply_clauses(fn_clauses, args, return, inferred), fn_inferred, arity}
               end
 
             # Any variable that is given as argument to the variable
@@ -688,34 +671,34 @@ defmodule Types.Checker do
         funs = for {:fn, _, _, ^arity} = fun <- existing, do: fun
 
         {case recur do
-          [] -> of_var_apply_unify_equal(funs, args, inferred)
-          _  -> of_var_apply_unify_recur(funs, args, recur, inferred, [], inferred)
+          [] ->
+            of_var_apply_unify_equal(funs, args, inferred)
+          _  ->
+            args = Union.permute_args(args, & &1)
+            of_var_apply_unify_recur(funs, args, recur, inferred, [], inferred)
          end, funs}
     end
   end
 
-  # TODO: Validate the whole unify recursion logic.
-  # Is the use of unify_args correct? Is the :recursive return correct?
   defp of_var_apply_unify_recur([{:fn, clauses, _, _} | funs], args, recur, inferred, sum, acc_inferred) do
     of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
   end
-  defp of_var_apply_unify_recur([], _args, recur, _inferred, sum, acc_inferred) do
-    if acc_inferred |> Map.take(recur) |> Enum.all?(fn {_, types} -> types != [] end) do
-      {:match, sum, acc_inferred}
-    else
-      :recursive
-    end
+  defp of_var_apply_unify_recur([], _args, _recur, _inferred, sum, acc_inferred) do
+    {:match, sum, acc_inferred}
   end
 
   defp of_var_apply_unify_recur([{head, [{:var, _, var_recur}] = body} | clauses],
                                 funs, args, recur, inferred, sum, acc_inferred) do
-    # TODO: What if a variable is set to an empty list in acc_inferred?
-    # TODO: Consider how subsets matter here.
-    with true <- var_recur in recur,
-         {:match, acc_inferred} <- unify_args(args, head, %{}, inferred, acc_inferred) do
-      of_var_apply_unify_recur(clauses, funs, args, recur, inferred, Union.union(body, sum), acc_inferred)
+    if var_recur in recur do
+      case of_var_apply_unify_permute(args, head, inferred, acc_inferred) do
+        {:match, acc_inferred} ->
+          of_var_apply_unify_recur(clauses, funs, args, recur,
+                                   inferred, Union.union(body, sum), acc_inferred)
+        _ ->
+          :nomatch
+      end
     else
-      _ -> of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
+      of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
     end
   end
   defp of_var_apply_unify_recur([_ | clauses], funs, args, recur, inferred, sum, acc_inferred) do
@@ -725,6 +708,18 @@ defmodule Types.Checker do
     of_var_apply_unify_recur(funs, args, recur, inferred, sum, acc_inferred)
   end
 
+  defp of_var_apply_unify_permute(args, head, inferred, acc_inferred) do
+    permuted = Union.permute_args(head, & &1)
+    Enum.find_value(args, fn arg ->
+      Enum.find_value(permuted, fn head ->
+        case unify_paired(arg, head, %{}, inferred, acc_inferred) do
+          {:match, _} = match -> match
+          _ -> nil
+        end
+      end)
+    end)
+  end
+
   defp of_var_apply_unify_equal([{:fn, clauses, _, _} | funs], args, inferred) do
     of_var_apply_unify_equal(clauses, funs, args, inferred)
   end
@@ -732,11 +727,12 @@ defmodule Types.Checker do
     :nomatch
   end
 
-  defp of_var_apply_unify_equal([{args, body} | _clauses], _funs, args, inferred) do
-    {:match, body, inferred}
-  end
-  defp of_var_apply_unify_equal([_ | clauses], funs, args, inferred) do
-    of_var_apply_unify_equal(clauses, funs, args, inferred)
+  defp of_var_apply_unify_equal([{fn_args, body} | clauses], funs, args, inferred) do
+    if Union.same_args?(args, fn_args) do
+      {:match, body, inferred}
+    else
+      of_var_apply_unify_equal(clauses, funs, args, inferred)
+    end
   end
   defp of_var_apply_unify_equal([], funs, args, inferred) do
     of_var_apply_unify_equal(funs, args, inferred)
@@ -754,20 +750,28 @@ defmodule Types.Checker do
   defp of_var_apply_clauses(clauses, args, return, inferred) do
     args = Union.permute_args(args, & &1)
 
-    {pre, pos} =
-      Enum.split_while(clauses, fn {head, _} ->
+    {index, _} =
+      Enum.reduce(clauses, {0, 0}, fn {head, _}, {acc, current} ->
         permuted =
           head
           |> of_var_apply_replace_vars_by_bricks(inferred)
           |> Union.permute_args(& &1)
 
-        Enum.any?(permuted, fn head ->
-          Enum.any?(args, fn arg ->
-            match?({:match, _}, unify_paired(arg, head, %{}, inferred, %{}))
+        match? =
+          Enum.any?(permuted, fn head ->
+            Enum.any?(args, fn arg ->
+              match?({:match, _}, unify_paired(arg, head, %{}, inferred, %{}))
+            end)
           end)
-        end)
+
+        if match? do
+          {current + 1, current + 1}
+        else
+          {acc, current + 1}
+        end
       end)
-    pre ++ [{args, return} | pos]
+
+    List.insert_at(clauses, index, {args, return})
   end
 
   # We don't want the existing free variables in the head to match,

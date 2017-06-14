@@ -190,7 +190,32 @@ defmodule Types.Union do
   Checks if two unions are the same.
   """
   def same?(old, new) do
-    old == new or :lists.sort(old) == :lists.sort(new)
+    old == new or same_traverse?(:lists.sort(old), :lists.sort(new))
+  end
+
+  @doc """
+  Check if two args (list of unions) are the same.
+  """
+  def same_args?([left_arg | left], [right_arg | right]) do
+    same?(left_arg, right_arg) and same_args?(left, right)
+  end
+  def same_args?([], []), do: true
+  def same_args?(_, _), do: false
+
+  defp same_traverse?([type | left], [type | right]) do
+    same_traverse?(left, right)
+  end
+  defp same_traverse?([{:fn, left_head, left_body, arity} | left],
+                      [{:fn, right_head, right_body, arity} | right]) do
+    same_args?(left_head, right_head) and
+      same?(left_body, right_body) and
+      same_traverse?(left, right)
+  end
+  defp same_traverse?([], []) do
+    true
+  end
+  defp same_traverse?(_, _) do
+    false
   end
 
   @doc """
