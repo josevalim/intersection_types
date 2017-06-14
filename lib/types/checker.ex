@@ -27,8 +27,6 @@ defmodule Types.Checker do
   #   * acc_vars - the variables that have been inferred
   #     during unification
 
-  # TODO: Include error reason every time unification fails.
-
   ## UNIFY RETURN
 
   # This function is used when all types on the right must
@@ -567,7 +565,7 @@ defmodule Types.Checker do
       {{:occurs, counter}, _move_up} ->
         error(meta, {:occurs, [{:var, var_ctx, var_counter}], counter, args, arity})
       {:self, _move_up} ->
-        error(meta, {:recursive_fn, [{:var, var_ctx, var_counter}], args, arity})
+        error(meta, {:self_var_apply, [{:var, var_ctx, var_counter}], args, arity})
       {var_recur, move_up} ->
         var_recur = Enum.uniq(var_recur)
 
@@ -584,8 +582,9 @@ defmodule Types.Checker do
           {{:match, return, inferred}, types} ->
             inferred = Map.put(inferred, var_counter, types)
             ok(return, %{state | inferred: inferred})
+          {:recursive, _} ->
+            error(meta, {:recursive_var_apply, [var_ctx, args]})
           {:nomatch, []} ->
-            # TODO: Add a test for this clause.
             error(meta, {:disjoint_var_apply, [var_ctx, args]})
           {:nomatch, types} ->
             return = [{:var, var_ctx, counter}]
@@ -683,7 +682,7 @@ defmodule Types.Checker do
   defp of_var_apply_unify_recur([{:fn, clauses, _, _} | funs], args, recur, inferred, sum, acc_inferred) do
     of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
   end
-  defp of_var_apply_unify_recur([], _args, _recur, _inferred, sum, acc_inferred) do
+  defp of_var_apply_unify_recur([], _args, recur, _inferred, sum, acc_inferred) do
     {:match, sum, acc_inferred}
   end
 
@@ -695,7 +694,7 @@ defmodule Types.Checker do
           of_var_apply_unify_recur(clauses, funs, args, recur,
                                    inferred, Union.union(body, sum), acc_inferred)
         _ ->
-          :nomatch
+          :recursive
       end
     else
       of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
