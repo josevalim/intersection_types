@@ -3,6 +3,8 @@ defmodule Types.UnionTest do
 
   import Types.Union
 
+  doctest Types.Union
+
   defmacro quoted_union(left, right) do
     with {:ok, left} <- ast_to_types(left),
          {:ok, right} <- ast_to_types(right) do
@@ -136,6 +138,44 @@ defmodule Types.UnionTest do
               {:cons, {:atom, false}, {:atom, true}},
               {:cons, {:atom, true}, {:atom, false}},
               {:cons, {:atom, true}, {:atom, true}}]
+    end
+  end
+
+  describe "simplify/1" do
+    test "merge aliases" do
+      assert simplify([{:atom, false}, {:atom, true}]) == {:union, [:boolean]}
+      assert simplify([{:atom, nil}, {:atom, true}]) == {:union, [{:atom, true}, {:atom, nil}]}
+      assert simplify([{:atom, false}, {:atom, true}, :integer]) == {:union, [:boolean, :integer]}
+    end
+
+    test "undistribute" do
+      assert simplify([{:tuple, [:atom], 1}, {:tuple, [:integer], 1}]) ==
+             {:union, [{:tuple, [{:union, [:atom, :integer]}], 1}]}
+
+      assert simplify([{:tuple, [:atom, :integer], 2}, {:tuple, [:integer, :atom], 2}]) ==
+             {:union, [{:tuple, [:integer, :atom], 2}, {:tuple, [:atom, :integer], 2}]}
+
+      assert simplify([{:cons, :integer, :atom}, {:cons, :integer, :integer}]) ==
+             {:union, [{:cons,  {:union, [:integer]}, {:union, [:atom, :integer]}}]}
+
+      assert simplify([{:cons, :integer, :atom}, {:cons, :atom, :integer}]) ==
+             {:union, [{:cons, :atom, :integer}, {:cons, :integer, :atom}]}
+    end
+
+    test "traverse" do
+      assert simplify([{:cons, :atom, {:atom, false}}, {:cons, :atom, {:atom, true}}]) ==
+                      {:union, [{:cons, {:union, [:atom]}, {:union, [:boolean]}}]}
+
+      assert simplify([{:tuple, [{:tuple, [{:atom, :foo}], 1}], 1},
+                       {:tuple, [{:tuple, [{:atom, :bar}], 1}], 1},
+                       {:tuple, [{:tuple, [{:atom, :baz}], 1}], 1}]) ==
+             {:union, [{:tuple, [{:union, [{:tuple, [{:union, [{:atom, :foo}, {:atom, :baz}, {:atom, :bar}]}], 1}]}], 1}]}
+
+      assert simplify([{:fn, [{[[{:atom, false}, {:atom, true}]], [:atom]}], [], 1}]) ==
+             {:union, [{:fn, [{[[{:union, [:boolean]}]], [{:union, [:atom]}]}], [], 1}]}
+
+      assert simplify([{:fn, [{[[{:tuple, [:atom], 1}, {:tuple, [:integer], 1}]], [:atom]}], [], 1}]) ==
+             {:union, [{:fn, [{[[{:union, [{:tuple, [{:union, [:atom, :integer]}], 1}]}]], [{:union, [:atom]}]}], [], 1}]}
     end
   end
 end
