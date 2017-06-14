@@ -100,12 +100,16 @@ defmodule Types.Union do
   end
 
   defp inferred_to_algebra(inferred, %{vars: vars} = state) do
-    guards =
-      for {key, [_ | _] = value} <- inferred do
-        left = Map.fetch!(vars, key)
-        {right, _} = types_to_algebra(value, state)
-        A.concat(A.concat(left, ": "), right)
+    {guards, _} =
+      Enum.flat_map_reduce inferred, state, fn
+        {key, [_ | _] = value}, state ->
+          left = Map.fetch!(vars, key)
+          {right, state} = types_to_algebra(value, state)
+          {[A.concat(A.concat(left, ": "), right)], state}
+        {_, []}, state ->
+          {[], state}
       end
+
     case guards do
       [] -> :none
       _ -> {:ok, A.fold_doc(guards, &A.glue(A.concat(&1, ","), &2))}
@@ -189,32 +193,37 @@ defmodule Types.Union do
   @doc """
   Checks if two unions are the same.
   """
-  def same?(old, new) do
-    old == new or same_traverse?(:lists.sort(old), :lists.sort(new))
+  def same?(old, new, vars \\ & &1 == &2) do
+    old == new or same_traverse?(:lists.sort(old), :lists.sort(new), vars)
   end
 
   @doc """
   Check if two args (list of unions) are the same.
   """
-  def same_args?([left_arg | left], [right_arg | right]) do
-    same?(left_arg, right_arg) and same_args?(left, right)
+  def same_args?(left, right, vars \\ & &1 == &2)
+  def same_args?([left_arg | left], [right_arg | right], vars) do
+    same?(left_arg, right_arg, vars) and same_args?(left, right, vars)
   end
-  def same_args?([], []), do: true
-  def same_args?(_, _), do: false
+  def same_args?([], [], _vars), do: true
+  def same_args?(_, _, _vars), do: false
 
-  defp same_traverse?([type | left], [type | right]) do
-    same_traverse?(left, right)
+  defp same_traverse?([type | left], [type | right], vars) do
+    same_traverse?(left, right, vars)
+  end
+  defp same_traverse?([{:var, _, left_counter} | left],
+                      [{:var, _, right_counter} | right], vars) do
+    vars.(left_counter, right_counter) and same_traverse?(left, right, vars)
   end
   defp same_traverse?([{:fn, left_head, left_body, arity} | left],
-                      [{:fn, right_head, right_body, arity} | right]) do
-    same_args?(left_head, right_head) and
-      same?(left_body, right_body) and
-      same_traverse?(left, right)
+                      [{:fn, right_head, right_body, arity} | right], vars) do
+    same_args?(left_head, right_head, vars) and
+      same?(left_body, right_body, vars) and
+      same_traverse?(left, right, vars)
   end
-  defp same_traverse?([], []) do
+  defp same_traverse?([], [], _vars) do
     true
   end
-  defp same_traverse?(_, _) do
+  defp same_traverse?(_, _, _vars) do
     false
   end
 
@@ -527,7 +536,7 @@ defmodule Types.Union do
   def supertype?([type], inferred) do
     reduce([type], false, fn
       {:var, _, counter}, acc when is_map(inferred) ->
-        acc or supertype?(Map.get(inferred, counter, []), inferred)
+        acc or supertype?(Map.get(inferred, counter, []), Map.delete(inferred, counter))
       :atom, _acc ->
         true
       _, acc ->
@@ -536,31 +545,5 @@ defmodule Types.Union do
   end
   def supertype?(types, _inferred) when is_list(types) do
     true
-  end
-
-  def supertype_or_subtype?([type], inferred) do
-    reduce([type], false, fn
-      {:var, _, counter}, acc when is_map(inferred) ->
-        acc or supertype_or_subtype?(Map.get(inferred, counter, []), inferred)
-      :atom, _acc ->
-        true
-      {:atom, _}, _acc ->
-        true
-      _, acc ->
-        acc
-    end)
-  end
-  def supertype_or_subtype?(types, _inferred) when is_list(types) do
-    true
-  end
-
-  @doc """
-  Returns true if the given type is recursive.
-  """
-  def recursive?(types, key) do
-    reduce(types, false, fn
-      {:var, _, counter}, _ when counter == key -> true
-      _, acc -> acc
-    end)
   end
 end

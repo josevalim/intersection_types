@@ -904,7 +904,7 @@ defmodule Types.CheckerTest do
                           "when a: integer() | {:+, a, b}, b: integer() | {:+, a, b}, " <>
                                "c: integer() | {:+, c, d}, d: integer() | {:+, c, d}"
 
-      # Multiple variables over multiple clauses
+      # # Multiple variables over multiple clauses
       assert quoted_of(recur = fn
         {:+, num} ->
           {:+, recur(num)}
@@ -912,12 +912,65 @@ defmodule Types.CheckerTest do
           {:-, recur(num)}
         num :: integer() ->
           num
-      end) |> format() == "({:+, a} -> {:+, b}; {:-, c} -> {:-, d}; integer() -> integer()) " <>
-                          "when a: integer() | {:+, a} | {:-, c}, b: integer() | {:+, b} | {:-, d}, " <>
-                               "c: integer() | {:+, a} | {:-, c}, d: integer() | {:+, b} | {:-, d}"
+      end) |> format() == "({:+, a} -> {:+, b}; {:-, a} -> {:-, b}; integer() -> integer()) " <>
+                          "when a: integer() | {:+, a} | {:-, a}, " <>
+                               "b: integer() | {:+, b} | {:-, b}"
+
+      # Multiple variables over multiple clauses with free variable
+      assert quoted_of(recur = fn
+        {:+, num} ->
+          {:+, recur(num)}
+        {:-, num} ->
+          {:-, recur(num)}
+        num ->
+          num
+      end) |> format() ==  "({:+, a} -> {:+, b}; {:-, a} -> {:-, b}; c -> c) " <>
+                           "when a: {:+, a} | {:-, a} | d, " <>
+                                "b: {:+, b} | {:-, b} | d"
     end
 
-    test "applied on intersection type" do
+    test "applied on recursive tuples" do
+      assert quoted_of((recur = fn
+        {:+, num} ->
+          recur(num)
+        {:-, num} ->
+          num
+      end).({:+, {:-, :foo}})) |> format() == ":foo"
+
+      assert quoted_of((recur = fn
+        {:+, num} ->
+          {:+, recur(num)}
+        {:-, num} ->
+          {:-, recur(num)}
+        num :: integer() ->
+          num
+      end).({:+, {:-, 0}})) |> format() ==
+             "{:+, integer()} | {:+, {:+, a}} | {:+, {:-, a}}"
+
+      assert quoted_of(fn z ->
+        (recur = fn
+          {:+, num} ->
+            {:+, recur(num)}
+          {:-, num} ->
+            {:-, recur(num)}
+          num :: integer() ->
+            num
+        end).(z)
+      end) |> format() ==
+             "(integer() | {:+, a} | {:-, a} -> integer() | {:+, b} | {:-, b}) " <>
+             "when a: integer() | {:+, a} | {:-, a}, " <>
+                  "b: integer() | {:+, b} | {:-, b}"
+
+      assert {:error, _, {:disjoint_apply, _, _, _}} =
+             quoted_of((recur = fn
+               {:+, num} ->
+                 recur(num)
+               {:-, num} ->
+                 num
+             end).({:+, {:*, 1}}))
+    end
+
+    test "unified with intersection type on recusive tuples" do
       assert quoted_of((fn x ->
         {x.({:-, :one}), x.({:+, {:-, :two}}), x.({:+, {:+, {:-, :three}}})}
       end).(recur = fn
@@ -936,6 +989,18 @@ defmodule Types.CheckerTest do
                {:-, num} ->
                  num
              end))
+    end
+
+    test "recursive on cons" do
+      # Free variables
+      assert quoted_of(recur = fn
+        [h | t] ->
+          [h | recur(t)]
+        [] ->
+          []
+      end) |> format() == "(cons(a, b) -> cons(a, c); empty_list() -> empty_list()) " <>
+                          "when b: empty_list() | cons(a, b), " <>
+                               "c: empty_list() | cons(a, c)"
     end
   end
 end

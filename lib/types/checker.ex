@@ -365,16 +365,16 @@ defmodule Types.Checker do
     types
   end
   def bind_matching(types, only, vars) do
-    bind_if(types, &Map.has_key?(only, &1), vars)
+    bind_if(types, &Map.has_key?(only, &1), vars, [])
   end
 
-  defp bind_if(types, condition, vars) do
+  defp bind_if(types, condition, vars, recur) do
     Union.traverse(types, :ok, fn
       {:var, _, counter}, acc ->
-        case condition.(counter) do
+        case counter not in recur and condition.(counter) do
           true ->
             case Map.get(vars, counter, []) do
-              [_ | _] = existing -> {:replace, bind_if(existing, condition, vars), acc}
+              [_ | _] = existing -> {:replace, bind_if(existing, condition, vars, [counter | recur]), acc}
               _ -> {:ok, acc}
             end
           false ->
@@ -459,7 +459,8 @@ defmodule Types.Checker do
   defp of({:=, _, [{:recur, _, _}, {:fn, _, clauses}]}, state) do
     with {:ok, clauses_state, clauses_inferred, state} <- of_def(clauses, state),
          {:ok, clauses, inferred} <- of_recur(clauses_state, clauses_inferred, state) do
-      ok([{:fn, clauses, inferred, 1}], state)
+      [{head, _} | _] = clauses
+      ok([{:fn, clauses, inferred, length(head)}], state)
     end
   end
 
@@ -682,7 +683,7 @@ defmodule Types.Checker do
   defp of_var_apply_unify_recur([{:fn, clauses, _, _} | funs], args, recur, inferred, sum, acc_inferred) do
     of_var_apply_unify_recur(clauses, funs, args, recur, inferred, sum, acc_inferred)
   end
-  defp of_var_apply_unify_recur([], _args, recur, _inferred, sum, acc_inferred) do
+  defp of_var_apply_unify_recur([], _args, _recur, _inferred, sum, acc_inferred) do
     {:match, sum, acc_inferred}
   end
 
@@ -1131,13 +1132,54 @@ defmodule Types.Checker do
         error
     end
   end
-  defp of_recur([], _clauses, _free, _inferred, _counter, acc) do
-    {clauses, inferred} =
-      Enum.map_reduce(:lists.reverse(acc), %{}, fn {{head, body}, state}, acc_inferred ->
+  defp of_recur([], _clauses, free, _inferred, _counter, acc) do
+    {clauses, {inferred, new}} =
+      Enum.map_reduce(:lists.reverse(acc), {%{}, %{}}, fn {{head, body}, state}, {acc, new} ->
         {clause, clause_inferred, _} = of_fn_expand(head, body, state)
-        {clause, Map.merge(acc_inferred, clause_inferred)}
+
+        # Go through all free variables between clauses and
+        # merge them if they have been assigned the same type.
+        {clause_inferred, new} =
+          Enum.reduce free, {clause_inferred, new}, fn key, {clause_inferred, new} ->
+            case Map.get(clause_inferred, key, []) do
+              [] -> {clause_inferred, new}
+              types ->
+                same =
+                  Enum.find(free, fn k ->
+                    k != key and of_recur_same_recursive?(types, Map.get(acc, k, []), acc)
+                  end)
+
+                if same do
+                  var = [{:var, {:recur, __MODULE__}, same}]
+                  {Map.delete(clause_inferred, key), Map.put(new, key, var)}
+                else
+                  {clause_inferred, new}
+                end
+            end
+          end
+
+        {clause, {Map.merge(acc, clause_inferred), new}}
       end)
+
+    clauses =
+      for {head, body} <- clauses do
+        {Enum.map(head, &bind_matching(&1, new, new)), bind_matching(body, new, new)}
+      end
+
+    inferred =
+      for {key, value} <- inferred, into: %{} do
+        {key, bind_matching(value, new, new)}
+      end
+
     {:ok, clauses, inferred}
+  end
+
+  defp of_recur_same_recursive?(left, right, inferred) do
+    Union.same?(left, right, fn left_counter, right_counter ->
+      left = Map.get(inferred, left_counter, [])
+      right = Map.get(inferred, right_counter, [])
+      of_recur_same_recursive?(left, right, inferred)
+    end)
   end
 
   # This function applies the different recursion arguments for a given
@@ -1149,18 +1191,11 @@ defmodule Types.Checker do
   # clause (clause_inferred) and replicate those changes on acc_inferred.
   defp of_recur_rec([{args, {meta, left_return}} | recs],
                     state, clauses, free, keys, clause_inferred, acc_inferred) do
-    %{counter: counter} = state
-
     with {:ok, right_return, state} <-
            of_fn_apply(clauses, clause_inferred, meta, args, %{state | inferred: acc_inferred}) do
-      # If we have defined new variables when applying
-      # (see of_fn_apply_keep), we need to update the
-      # current `keys` by comparing the difference in
-      # the counter, otherwise their types are lost.
-      %{inferred: inferred, counter: acc_counter} = state
-      keys = of_recur_keys(counter, acc_counter, keys)
+      %{inferred: inferred} = state
 
-      right_return = bind_if(right_return, & &1 in free, inferred)
+      right_return = bind_if(right_return, & &1 in free, inferred, [])
       case unify_return(left_return, right_return, clause_inferred, inferred, inferred) do
         {:match, inferred} ->
           clause_inferred = Map.take(inferred, keys)
@@ -1173,13 +1208,6 @@ defmodule Types.Checker do
   end
   defp of_recur_rec([], state, _clauses, _free, _keys, _clause_inferred, inferred) do
     {:ok, %{state | inferred: inferred}}
-  end
-
-  defp of_recur_keys(counter, counter, keys) do
-    keys
-  end
-  defp of_recur_keys(pre_counter, counter, keys) do
-    Enum.to_list(pre_counter+1..counter) ++ keys
   end
 
   ## Blocks
