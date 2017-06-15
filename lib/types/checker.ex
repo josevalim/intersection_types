@@ -1133,53 +1133,13 @@ defmodule Types.Checker do
     end
   end
   defp of_recur([], _clauses, free, _inferred, _counter, acc) do
-    {clauses, {inferred, new}} =
-      Enum.map_reduce(:lists.reverse(acc), {%{}, %{}}, fn {{head, body}, state}, {acc, new} ->
+    {clauses, inferred} =
+      Enum.map_reduce(:lists.reverse(acc), %{}, fn {{head, body}, state}, inferred ->
         {clause, clause_inferred, _} = of_fn_expand(head, body, state)
-
-        # Go through all free variables between clauses and
-        # merge them if they have been assigned the same type.
-        {clause_inferred, new} =
-          Enum.reduce free, {clause_inferred, new}, fn key, {clause_inferred, new} ->
-            case Map.get(clause_inferred, key, []) do
-              [] -> {clause_inferred, new}
-              types ->
-                same =
-                  Enum.find(free, fn k ->
-                    k != key and of_recur_same_recursive?(types, Map.get(acc, k, []), acc)
-                  end)
-
-                if same do
-                  var = [{:var, {:recur, __MODULE__}, same}]
-                  {Map.delete(clause_inferred, key), Map.put(new, key, var)}
-                else
-                  {clause_inferred, new}
-                end
-            end
-          end
-
-        {clause, {Map.merge(acc, clause_inferred), new}}
+        {clause, Map.merge(inferred, clause_inferred)}
       end)
 
-    clauses =
-      for {head, body} <- clauses do
-        {Enum.map(head, &bind_matching(&1, new, new)), bind_matching(body, new, new)}
-      end
-
-    inferred =
-      for {key, value} <- inferred, into: %{} do
-        {key, bind_matching(value, new, new)}
-      end
-
     {:ok, clauses, inferred}
-  end
-
-  defp of_recur_same_recursive?(left, right, inferred) do
-    Union.same?(left, right, fn left_counter, right_counter ->
-      left = Map.get(inferred, left_counter, [])
-      right = Map.get(inferred, right_counter, [])
-      of_recur_same_recursive?(left, right, inferred)
-    end)
   end
 
   # This function applies the different recursion arguments for a given

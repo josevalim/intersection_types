@@ -195,37 +195,33 @@ defmodule Types.Union do
   @doc """
   Checks if two unions are the same.
   """
-  def same?(old, new, vars \\ & &1 == &2) do
-    old == new or same_traverse?(:lists.sort(old), :lists.sort(new), vars)
+  def same?(old, new) do
+    old == new or same_traverse?(:lists.sort(old), :lists.sort(new))
   end
 
   @doc """
   Check if two args (list of unions) are the same.
   """
-  def same_args?(left, right, vars \\ & &1 == &2)
-  def same_args?([left_arg | left], [right_arg | right], vars) do
-    same?(left_arg, right_arg, vars) and same_args?(left, right, vars)
+  def same_args?(left, right)
+  def same_args?([left_arg | left], [right_arg | right]) do
+    same?(left_arg, right_arg) and same_args?(left, right)
   end
-  def same_args?([], [], _vars), do: true
-  def same_args?(_, _, _vars), do: false
+  def same_args?([], []), do: true
+  def same_args?(_, _), do: false
 
-  defp same_traverse?([type | left], [type | right], vars) do
-    same_traverse?(left, right, vars)
-  end
-  defp same_traverse?([{:var, _, left_counter} | left],
-                      [{:var, _, right_counter} | right], vars) do
-    vars.(left_counter, right_counter) and same_traverse?(left, right, vars)
+  defp same_traverse?([type | left], [type | right]) do
+    same_traverse?(left, right)
   end
   defp same_traverse?([{:fn, left_head, left_body, arity} | left],
-                      [{:fn, right_head, right_body, arity} | right], vars) do
-    same_args?(left_head, right_head, vars) and
-      same?(left_body, right_body, vars) and
-      same_traverse?(left, right, vars)
+                      [{:fn, right_head, right_body, arity} | right]) do
+    same_args?(left_head, right_head) and
+      same?(left_body, right_body) and
+      same_traverse?(left, right)
   end
-  defp same_traverse?([], [], _vars) do
+  defp same_traverse?([], []) do
     true
   end
-  defp same_traverse?(_, _, _vars) do
+  defp same_traverse?(_, _) do
     false
   end
 
