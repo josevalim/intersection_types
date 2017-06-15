@@ -11,6 +11,7 @@ defmodule Types.Union do
   #   {:atom, val}
   #   {:fn, [{head, body}], inferred, arity}
   #   {:tuple, [arg], arity}
+  #   {:cons, left, right}
   #   {:var, var_ctx, var_key}
   #   :integer
   #   :atom
@@ -23,6 +24,7 @@ defmodule Types.Union do
   #   qualify
   #   to_algebra
   #   ast_to_types
+  #   simplify
   #
 
   # TODO
@@ -545,5 +547,116 @@ defmodule Types.Union do
   end
   def supertype?(types, _inferred) when is_list(types) do
     true
+  end
+
+  @doc """
+  Simplifies unions by merging distributed unions over
+  tuples and cons, and merging types into aliases.
+
+  This function should only be used for pretty-printing since
+  it returns aliased types and unions are converted to
+  `{:union, [type]}`.
+
+  ## Examples
+
+      iex> simplify([{:tuple, [:atom], 1}, {:tuple, [:integer], 1}])
+      {:union, [{:tuple, [{:union, [:atom, :integer]}], 1}]}
+
+      iex> simplify([{:atom, false}, {:atom, true}])
+      {:union, [:boolean]}
+
+      iex> simplify([:atom, :integer])
+      {:union, [:integer, :atom]}
+  """
+  def simplify(types) when is_list(types) do
+    types
+    |> undistribute_union([])
+    |> traverse_aliases()
+  end
+
+  # Merges predefined aliases so that true | false => boolean()
+  defp traverse_aliases({:union, types}) do
+    types = merge_aliases(types)
+    {:union, traverse(types, :ok, &traverse_aliases/2) |> elem(0)}
+  end
+  defp traverse_aliases({:union, _} = union, acc) do
+    {:replace, [traverse_aliases(union)], acc}
+  end
+  defp traverse_aliases(_, acc) do
+    {:ok, acc}
+  end
+
+  def merge_aliases(types) do
+    Enum.reduce(types, types, &merge_alias/2)
+  end
+
+  defp merge_alias({:atom, false} = type, types) do
+    case pop_type(types, {:atom, true}) do
+      {:ok, types} -> [:boolean | List.delete(types, type)]
+      :error -> types
+    end
+  end
+  defp merge_alias(_, types) do
+    types
+  end
+
+  defp pop_type([], _type), do: :error
+  defp pop_type(types, type) do
+    case Enum.split_while(types, & &1 != type) do
+      {_pre, []} -> :error
+      {pre, [_ | pos]} -> {:ok, pre ++ pos}
+    end
+  end
+
+  # Undistributes a union so that {x} | {y} => {x | y}
+  defp undistribute_union([first | rest], acc) do
+    {merge, keep} = Enum.split_with(rest, &distributed?(first, &1))
+    if merge == [] do
+      undistribute_union(keep, [undistribute_fn(first) | acc])
+    else
+      undistribute_union(keep, [merge_union([first | merge]) | acc])
+    end
+  end
+  defp undistribute_union([], acc) do
+    {:union, acc}
+  end
+
+  defp undistribute_fn({:fn, clauses, inferred, arity}) do
+    clauses = Enum.map(clauses, fn {head, body} ->
+      head = Enum.map(head, &[undistribute_union(&1, [])])
+      body = [undistribute_union(body, [])]
+      {head, body}
+    end)
+    {:fn, clauses, inferred, arity}
+  end
+  defp undistribute_fn(other) do
+    other
+  end
+
+  defp distributed?({:cons, left, _}, {:cons, left, _}), do: true
+  defp distributed?({:cons, _, right}, {:cons, _, right}), do: true
+  defp distributed?({:tuple, left, arity}, {:tuple, right, arity}) do
+    # Check if the tuples only differ in one element
+    zipped = Enum.zip(left, right)
+    equal_elems = Enum.count(zipped, fn {left, right} -> left == right end)
+    arity - equal_elems == 1
+  end
+  defp distributed?(_, _), do: false
+
+  # Merges a union of cons or tuples into a single cons or tuple where
+  # the union is moved inside the elements
+  defp merge_union([{:cons, _, _} | _] = union) do
+    {left, right} =
+      Enum.reduce(union, {[], []}, fn {:cons, left, right}, {left_union, right_union} ->
+        {union_add(left, left_union, []), union_add(right, right_union, [])}
+      end)
+    {:cons, undistribute_union(left, []), undistribute_union(right, [])}
+  end
+  defp merge_union([{:tuple, args, arity} | union]) do
+    args = Enum.map(args, &[&1])
+    args = Enum.reduce(union, args, fn {:tuple, args, ^arity}, acc ->
+      Enum.map(Enum.zip(args, acc), fn {left, union} -> union_add(left, union, []) end)
+    end)
+    {:tuple, Enum.map(args, &undistribute_union(&1, [])), arity}
   end
 end

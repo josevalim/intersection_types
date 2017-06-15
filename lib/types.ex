@@ -107,7 +107,7 @@ defmodule Types do
 
       This means we can't infer the type for `x.(x)`, as it has the type
       `(a ^ (a -> b))`, which is the intersection between a type variable
-      and a function. Similarly, `x.(x.(y))` would have na intersection
+      and a function. Similarly, `x.(x.(y))` would have an intersection
       type `(a -> b) ^ (b -> c)` which has a dependency between a body and
       a head variable.
 
@@ -116,7 +116,7 @@ defmodule Types do
       are expensive and complex, as they require a permutation of all possible
       clauses that could match `(a -> b) ^ (b -> c)`.
 
-      In those scenarios, we infer the same type as in a Hindley-Milnersystem.
+      In those scenarios, we infer the same type as in a Hindley-Milner system.
       For all others, such as `{x.(:foo), x.(:bar)}`, we infer the proper
       intersection type `(:bar -> a) ^ (:foo -> b)` expressed as
       `(:bar -> a; :foo -> b)`. The recursive typing rules are also taken
