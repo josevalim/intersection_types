@@ -120,7 +120,9 @@ defmodule Types do
       For all others, such as `{x.(:foo), x.(:bar)}`, we infer the proper
       intersection type `(:bar -> a) ^ (:foo -> b)` expressed as
       `(:bar -> a; :foo -> b)`. The recursive typing rules are also taken
-      from this paper.
+      from this paper, with the difference that recursion over intersection
+      types (i.e. between different clauses) is not allowed and converted
+      to a single clause.
 
   ### Erlang papers
 

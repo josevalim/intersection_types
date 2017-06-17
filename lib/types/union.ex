@@ -36,11 +36,13 @@ defmodule Types.Union do
   # on the left side before.
   #
   # Another restriction is that multiple clauses can only
-  # share variables in the body, however this restriction is
-  # broken with recursive functions. TODO: We need to carefully
-  # consider how this impacts the code and if we are going to
-  # allow users to express those types. Maybe it should only
-  # be possible if the recursion is at the top level function.
+  # share variables in the body. For example:
+  #
+  #     fn x -> either(x.(:foo), x.(:bar)) end
+  #     #=> ((:foo -> a; :bar -> a) -> true | false)
+  #
+  # TODO: we need to check how the function above behaves
+  # in function unification and regular apply.
   #
   # ## Function code parsing.
   #
