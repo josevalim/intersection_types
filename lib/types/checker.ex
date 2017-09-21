@@ -8,12 +8,16 @@ defmodule Types.Checker do
   end
 
   def expr(integer, state) when is_integer(integer) do
-    ok(Union.build(:integer), state)
+    ok(integer, Union.build(:integer), state)
   end
 
-  @compile {:inline, ok: 2}
+  def expr(atom, state) when is_atom(atom) do
+    ok(atom, Union.build({:atom, atom}), state)
+  end
 
-  defp ok(types, state) do
-    {:ok, types, state}
+  @compile {:inline, ok: 3}
+
+  defp ok(expr, types, state) do
+    {expr, types, state}
   end
 end
